@@ -1,7 +1,8 @@
 {
   "defaultACLAccess": {"publishClientSend": false,"publishClientReceive": true,"subscribe": false,"unsubscribe": true},
   "clients": [
-    {"username":"admin","textname":"Admin user","roles":[{"rolename":"admin"}],"password":"Cpjr6V/ZGTbVzcPYnnALm973H4LtbxQW10tCpI1uOiOfl8emjfDPgl35tx8nAS1tGJjlqe49jS++2QCopC7TZQ==","salt":"Bafe72HfbDzKIegp","iterations":101}
+    {"username":"admin","textname":"Admin user","roles":[{"rolename":"admin"}],"password":"Cpjr6V/ZGTbVzcPYnnALm973H4LtbxQW10tCpI1uOiOfl8emjfDPgl35tx8nAS1tGJjlqe49jS++2QCopC7TZQ==","salt":"Bafe72HfbDzKIegp","iterations":101},
+    {"username":"test","textname":"Test user","roles":[{"rolename":"test"}],"password":"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==","salt":"44X4aE1jpXETPNNq","iterations":101}
   ],
   "groups": [],
   "roles": [
@@ -14,6 +15,11 @@
       {"acltype":"subscribePattern","topic":"$CONTROL/dynamic-security/#","priority":0,"allow":true},
       {"acltype":"subscribePattern","topic":"$SYS/#","priority":0,"allow":true},
       {"acltype":"subscribePattern","topic":"#","priority":0,"allow":true},
+      {"acltype":"unsubscribePattern","topic":"#","priority":0,"allow":true}]
+    },
+    {"rolename":"test","acls":[
+      {"acltype":"publishClientSend","topic":"+/test/#","priority":1,"allow":true},
+      {"acltype":"subscribePattern","topic":"+/test/#","priority":0,"allow":true},
       {"acltype":"unsubscribePattern","topic":"#","priority":0,"allow":true}]
     }
   ]

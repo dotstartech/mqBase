@@ -1,7 +1,6 @@
 FROM debian:trixie
-#FROM debian:bookworm
 
-LABEL maintainer="dotStar Technologies" description="MQTT SQL Admin - Mosquitto MQTT Broker with libSQL"
+LABEL maintainer="dotStar Technologies" description="MQTT SQL Admin - Mosquitto MQTT Broker with libSQL Persistency and Web Admin Interface"
 
 ENV VERSION=2.0.22 \
     LWS_VERSION=4.2.1 \

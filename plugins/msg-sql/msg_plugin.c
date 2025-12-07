@@ -20,6 +20,9 @@
 #define ULID_PARANOID  (1 << 1)
 #define ULID_SECURE    (1 << 2)
 
+// Maximum number of exclusion patterns
+#define MAX_EXCLUDE_PATTERNS 64
+
 struct ulid_generator {
     unsigned char last[16];
     unsigned long long last_ts;
@@ -34,6 +37,107 @@ static mosquitto_plugin_id_t *mosq_pid = NULL;
 
 static sqlite3 *msg_db = NULL;
 static sqlite3_stmt *stmt = NULL;
+
+// Topic exclusion patterns
+static char *exclude_patterns[MAX_EXCLUDE_PATTERNS];
+static int exclude_pattern_count = 0;
+
+// MQTT topic matching with wildcards (+ and #)
+// Returns 1 if topic matches pattern, 0 otherwise
+static int topic_matches_pattern(const char *pattern, const char *topic) {
+    const char *p = pattern;
+    const char *t = topic;
+    
+    while (*p && *t) {
+        if (*p == '#') {
+            // # matches everything from here to the end
+            return 1;
+        } else if (*p == '+') {
+            // + matches a single level (until next / or end)
+            while (*t && *t != '/') {
+                t++;
+            }
+            p++;
+            // If pattern has more after +, it should be a /
+            if (*p && *p != '/') {
+                return 0;
+            }
+        } else if (*p == *t) {
+            p++;
+            t++;
+        } else {
+            return 0;
+        }
+    }
+    
+    // Check end conditions
+    if (*p == '#') {
+        return 1;
+    }
+    if (*p == '\0' && *t == '\0') {
+        return 1;
+    }
+    // Handle pattern ending with /+ matching topic without trailing level
+    if (*p == '/' && *(p+1) == '+' && *(p+2) == '\0' && *t == '\0') {
+        return 0; // topic/foo doesn't match topic/foo/+
+    }
+    
+    return 0;
+}
+
+// Check if topic should be excluded from persistence
+static int is_topic_excluded(const char *topic) {
+    for (int i = 0; i < exclude_pattern_count; i++) {
+        if (topic_matches_pattern(exclude_patterns[i], topic)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Parse comma-separated exclusion patterns
+static void parse_exclude_patterns(const char *patterns_str) {
+    if (patterns_str == NULL || *patterns_str == '\0') {
+        return;
+    }
+    
+    char *patterns_copy = strdup(patterns_str);
+    if (patterns_copy == NULL) {
+        return;
+    }
+    
+    char *token = strtok(patterns_copy, ",");
+    while (token != NULL && exclude_pattern_count < MAX_EXCLUDE_PATTERNS) {
+        // Trim leading whitespace
+        while (*token == ' ') token++;
+        // Trim trailing whitespace
+        char *end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') {
+            *end = '\0';
+            end--;
+        }
+        
+        if (*token != '\0') {
+            exclude_patterns[exclude_pattern_count] = strdup(token);
+            if (exclude_patterns[exclude_pattern_count] != NULL) {
+                mosquitto_log_printf(MOSQ_LOG_INFO, "Excluding topic pattern: %s", exclude_patterns[exclude_pattern_count]);
+                exclude_pattern_count++;
+            }
+        }
+        token = strtok(NULL, ",");
+    }
+    
+    free(patterns_copy);
+}
+
+// Free exclusion patterns
+static void free_exclude_patterns(void) {
+    for (int i = 0; i < exclude_pattern_count; i++) {
+        free(exclude_patterns[i]);
+        exclude_patterns[i] = NULL;
+    }
+    exclude_pattern_count = 0;
+}
 
 // Returns unix epoch microseconds.
 static unsigned long long platform_utime(int coarse)
@@ -287,6 +391,13 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
     unsigned long long usEpoch = ulid_generate(&ulid_gen, ulid);
     long int msEpoch = usEpoch / 1000ULL;
 
+    // Check if topic should be excluded from persistence
+    if (is_topic_excluded(ed->topic)) {
+        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Excluded topic from persistence: %s", ed->topic);
+        // Still add ULID property but don't store in database
+        return mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "ulid", ulid);
+    }
+
     if(stmt != NULL) {
 		sqlite3_bind_text(stmt, 1, ulid, -1, SQLITE_STATIC);
         
@@ -307,10 +418,6 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
         free(payload);
     }
 
-    //char ts_buff[21];
-	//sprintf(ts_buff, "%ld", msEpoch);
-    //mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "timestamp", ts_buff);
-
     return mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "ulid", ulid);
 }
 
@@ -328,8 +435,13 @@ int mosquitto_plugin_version(int supported_version_count, const int *supported_v
 int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, struct mosquitto_opt *opts, int opt_count)
 {
 	UNUSED(user_data);
-	UNUSED(opts);
-	UNUSED(opt_count);
+
+    // Parse plugin options
+    for (int i = 0; i < opt_count; i++) {
+        if (strcmp(opts[i].key, "exclude_topics") == 0) {
+            parse_exclude_patterns(opts[i].value);
+        }
+    }
 
     int rc = sqlite3_open("/mosquitto/data/dbs/default/data", &msg_db);
     if (rc) {
@@ -365,6 +477,9 @@ int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int op
 	UNUSED(user_data);
 	UNUSED(opts);
 	UNUSED(opt_count);
+
+    // Free exclusion patterns
+    free_exclude_patterns();
 
 	if (stmt != NULL) {
 		sqlite3_finalize(stmt);
