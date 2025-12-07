@@ -408,11 +408,17 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
     	sqlite3_bind_text(stmt, 3, payload, -1, SQLITE_STATIC);
 
         sqlite3_bind_int64(stmt, 4, (sqlite3_int64)msEpoch);
+
+        // Store retain flag (1 = retained/persistent, 0 = transient)
+        sqlite3_bind_int(stmt, 5, ed->retain ? 1 : 0);
+
+        // Store QoS level (0, 1, or 2)
+        sqlite3_bind_int(stmt, 6, ed->qos);
     	
 		sqlite3_step(stmt);
     	sqlite3_reset(stmt);
 
-        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Stored event: topic=%s with payload=%s", topic, payload);
+        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Stored event: topic=%s retain=%d qos=%d payload=%s", topic, ed->retain, ed->qos, payload);
 
         free(topic);
         free(payload);
@@ -451,13 +457,13 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
         mosquitto_log_printf(MOSQ_LOG_INFO, "Opened database: /mosquitto/data/dbs/default/data");
 
 		char *err_msg = 0;
-		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, timestamp integer not null);";
+		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, timestamp integer not null, retain integer not null default 0, qos integer not null default 0);";
 		rc = sqlite3_exec(msg_db, sql, NULL, 0, &err_msg);
 		if (rc != SQLITE_OK) {
             mosquitto_log_printf(MOSQ_LOG_ERR, "SQL error: %s", err_msg);
 			sqlite3_free(err_msg);
 		} else {
-    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, timestamp) values (?1, ?2, ?3, ?4)", -1, &stmt, 0);
+    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, timestamp, retain, qos) values (?1, ?2, ?3, ?4, ?5, ?6)", -1, &stmt, 0);
     		if (rc != SQLITE_OK) {
                 mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to prepare insert data statement: %s", sqlite3_errmsg(msg_db));
 			}

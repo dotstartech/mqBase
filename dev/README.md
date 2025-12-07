@@ -8,9 +8,3 @@ map $http_upgrade $connection_upgrade {
     '' close;
 }
 ```
-
-## Location-Role Setup
-Run in the MQTT container the following command
-```bash
-./add-location.sh ENV LOCATION ADMIN_USER ADMIN_PSWD TERMINAL_PSWD WEBAPP_PSWD SERVER_PSWD
-```

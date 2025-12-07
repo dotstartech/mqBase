@@ -484,3 +484,42 @@ td:first-child {
     font-size: 22px;
     font-weight: bold;
 }
+
+/* Checkbox styling for filters */
+.checkbox-group {
+    display: flex;
+    align-items: center;
+}
+
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: var(--ctp-text);
+    font-size: 13px;
+}
+
+.checkbox-group input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--ctp-mauve);
+    cursor: pointer;
+}
+
+/* Retained message highlighting */
+.retained-message {
+    background-color: rgba(203, 166, 247, 0.1) !important;
+}
+
+.retained-message:hover {
+    background-color: rgba(203, 166, 247, 0.2) !important;
+}
+
+/* Retain column styling */
+td.retained {
+    text-align: left;
+    font-size: 16px;
+    color: var(--ctp-green);
+    font-weight: bold;
+}

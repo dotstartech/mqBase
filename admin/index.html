@@ -145,6 +145,12 @@
                         <option value="1000">1000</option>
                     </select>
                 </div>
+                <div class="control-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="persistentOnlyFilter">
+                        Retained only
+                    </label>
+                </div>
                 <button id="applyFilterBtn">🔍 Apply</button>
                 <button onclick="clearMqttMessages()">🗑️ Clear</button>
             </div>
@@ -157,6 +163,7 @@
                             <th>Timestamp</th>
                             <th>Topic</th>
                             <th>Payload</th>
+                            <th>Retained</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -719,13 +726,14 @@
                     password: password,
                     clean: true,
                     reconnectPeriod: 5000,
+                    protocolVersion: 5,  // MQTT v5 for retain-as-published support
                 });
 
                 mqttClient.on('connect', () => {
                     console.log('MQTT connected');
                     
-                    // Subscribe to topic
-                    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+                    // Subscribe to topic with Retain As Published (rap) option
+                    mqttClient.subscribe(MQTT_TOPIC, { rap: true }, (err) => {
                         if (err) {
                             console.error('Subscribe error:', err);
                             updateMqttStatus('Error', '❌', 'var(--ctp-red)');
@@ -736,12 +744,13 @@
                     });
                 });
 
-                mqttClient.on('message', (topic, payload) => {
+                mqttClient.on('message', (topic, payload, packet) => {
                     const timestamp = new Date().toISOString().replace('T', ' ').substr(0, 23);
                     const message = {
                         timestamp: timestamp,
                         topic: topic,
-                        payload: payload.toString()
+                        payload: payload.toString(),
+                        retain: packet.retain || false
                     };
                     
                     // Add to beginning of array (newest first)
@@ -805,11 +814,19 @@
             
             const limitSelect = document.getElementById('brokerLimit');
             const limitValue = limitSelect ? parseInt(limitSelect.value) : 100;
+
+            const persistentOnlyCheckbox = document.getElementById('persistentOnlyFilter');
+            const persistentOnly = persistentOnlyCheckbox ? persistentOnlyCheckbox.checked : false;
             
-            console.log('Filters - topic:', filterValue, 'time:', timeFilterValue, 'limit:', limitValue);
+            console.log('Filters - topic:', filterValue, 'time:', timeFilterValue, 'limit:', limitValue, 'persistentOnly:', persistentOnly);
             
             // Start with all messages
             let filteredMessages = mqttMessages;
+
+            // Apply persistent-only filter
+            if (persistentOnly) {
+                filteredMessages = filteredMessages.filter(msg => msg.retain === true);
+            }
             
             // Apply topic filter
             if (filterValue) {
@@ -837,10 +854,15 @@
             
             filteredMessages.forEach(msg => {
                 const row = document.createElement('tr');
+                // Highlight retained messages
+                if (msg.retain) {
+                    row.classList.add('retained-message');
+                }
                 row.innerHTML = `
                     <td class="timestamp">${msg.timestamp}</td>
                     <td class="topic">${msg.topic}</td>
                     <td class="payload">${msg.payload}</td>
+                    <td class="retained">${msg.retain ? '✓' : ''}</td>
                 `;
                 tbody.appendChild(row);
             });
