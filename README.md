@@ -1,6 +1,6 @@
 # MQTT SQL Admin
 
-MQTT SQL Admin is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) MQTT broker and [libSQL](https://github.com/tursodatabase/libsql) database and features:
+MQTT SQL Admin is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) MQTT broker, [libSQL](https://github.com/tursodatabase/libsql) database and [Nginx](https://github.com/nginx/nginx) web server. It features:
  - MQTT v5.0 protocol (plain MQTT, over TLS or WebSocket)
  - Authentication and authorization based on Access Control List
  - Message persistency in local libSQL database with remote HTTP access
