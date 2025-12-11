@@ -142,9 +142,34 @@ fi
 echo ""
 
 # -----------------------------------------
-# Test 5: Query recent messages
+# Test 5: Retained messages
 # -----------------------------------------
-echo "--- Test 5: Recent messages ---"
+echo "--- Test 5: Retained messages ---"
+TOPIC_RETAINED_1="data/test/state/device1"
+TOPIC_RETAINED_2="data/test/state/device2"
+MSG_RETAINED_1="{\"test_id\":\"$TEST_ID\",\"type\":\"retained\",\"device\":\"device1\",\"status\":\"online\"}"
+MSG_RETAINED_2="{\"test_id\":\"$TEST_ID\",\"type\":\"retained\",\"device\":\"device2\",\"status\":\"active\"}"
+
+log_info "Publishing retained message to $TOPIC_RETAINED_1"
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_RETAINED_1" -m "$MSG_RETAINED_1" -q 1 -r
+
+log_info "Publishing retained message to $TOPIC_RETAINED_2"
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_RETAINED_2" -m "$MSG_RETAINED_2" -q 1 -r
+
+sleep 1
+COUNT_AFTER_5=$(db_count)
+EXPECTED=$((COUNT_AFTER_3 + 2))
+if [ "$COUNT_AFTER_5" -ge "$EXPECTED" ]; then
+    log_pass "Retained messages persisted ($COUNT_AFTER_3 -> $COUNT_AFTER_5)"
+else
+    log_fail "Expected at least $EXPECTED messages, got $COUNT_AFTER_5"
+fi
+echo ""
+
+# -----------------------------------------
+# Test 6: Query recent messages
+# -----------------------------------------
+echo "--- Test 6: Recent messages ---"
 log_info "Last 5 messages in database:"
 curl -s -X POST "$DB_URL" \
     -H "Content-Type: application/json" \

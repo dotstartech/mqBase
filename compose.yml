@@ -1,6 +1,6 @@
 services:
   mqtt-sql-admin:
-    image: mqtt-sql-admin:0.1.0
+    image: mqtt-sql-admin:${MSA_VERSION:-latest}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -8,8 +8,7 @@ services:
         UID: ${USER_ID:-1000}
         GID: ${GROUP_ID:-1000}
       tags:
-      - mqtt-sql-admin:0.1.0
-    container_name: mqtt-sql-admin
+      - mqtt-sql-admin:${MSA_VERSION:-latest}
     hostname: mqtt-sql-admin
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -44,3 +43,4 @@ networks:
   dev-proxy:
     driver: overlay
     name: dev-proxy
+    attachable: true

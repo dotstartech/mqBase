@@ -10,9 +10,10 @@ ENV VERSION=2.0.22 \
 ARG UID=1883
 ARG GID=1883
 
-COPY plugins/msg-sql/msg_plugin.c /tmp/msg_plugin.c
-COPY plugins/msg-sql/Makefile /tmp/Makefile
+COPY plugins/sql/sql_plugin.c /tmp/sql_plugin.c
+COPY plugins/sql/Makefile /tmp/Makefile
 COPY mosquitto/config/mosquitto.conf /tmp/mosquitto.conf
+COPY libsql/libsql.conf /tmp/libsql.conf
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
 COPY docker/run.sh /run.sh
 COPY admin /mosquitto/admin
@@ -47,10 +48,10 @@ RUN apt update && apt install -y build-essential cmake wget libssl-dev libcjson-
     && mkdir -p /build/mosq \
     && tar --strip=1 -xf /tmp/mosq.tar.gz -C /build/mosq \
     && rm /tmp/mosq.tar.gz \
-    && mkdir -p /build/mosq/plugins/msg-sql \
-    && mv /tmp/msg_plugin.c /build/mosq/plugins/msg-sql/. \
-    && mv /tmp/Makefile /build/mosq/plugins/msg-sql/. \
-    && sed -i 's/DIRS=/DIRS=msg-sql /' /build/mosq/plugins/Makefile \
+    && mkdir -p /build/mosq/plugins/sql \
+    && mv /tmp/sql_plugin.c /build/mosq/plugins/sql/. \
+    && mv /tmp/Makefile /build/mosq/plugins/sql/. \
+    && sed -i 's/DIRS=/DIRS=sql /' /build/mosq/plugins/Makefile \
     && make -C /build/mosq -j "$(nproc)" \
         CFLAGS="-Wall -O2 -I/build/lws/include -I/build" \
         LDFLAGS="-L/build/lws/lib -lm" \
@@ -69,8 +70,9 @@ RUN apt update && apt install -y build-essential cmake wget libssl-dev libcjson-
     && install -s -m644 /build/mosq/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so.1 \
     && install -s -m755 /build/mosq/src/mosquitto /usr/sbin/mosquitto \
     && install -s -m755 /build/mosq/plugins/dynamic-security/mosquitto_dynamic_security.so /usr/lib/mosquitto_dynamic_security.so \
-    && install -s -m755 /build/mosq/plugins/msg-sql/msg_plugin.so /usr/lib/msg_plugin.so \
+    && install -s -m755 /build/mosq/plugins/sql/sql_plugin.so /usr/lib/sql_plugin.so \
     && install -m644 /tmp/mosquitto.conf /mosquitto/config/mosquitto.conf \
+    && install -m644 /tmp/libsql.conf /mosquitto/config/libsql.conf \
     && mv /run.sh /mosquitto \
     && chown -R admin:admin /mosquitto \
     && chmod +x /mosquitto/run.sh \

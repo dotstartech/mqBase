@@ -71,7 +71,7 @@ header h1 {
 }
 
 .tab {
-    padding: 10px 20px;
+    padding: 8px 20px;
     background: var(--ctp-surface0);
     color: var(--ctp-subtext0);
     border: none;
@@ -107,7 +107,7 @@ header h1 {
 }
 
 .controls {
-    padding: 16px 24px;
+    padding: 12px 24px;
     background: var(--ctp-mantle);
     border-bottom: 1px solid var(--ctp-surface0);
     display: flex;
@@ -264,7 +264,7 @@ button:disabled {
 }
 
 .content {
-    padding: 16px;
+    padding: 14px;
 }
 
 .query-builder {
@@ -315,14 +315,14 @@ textarea {
 table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 8px;
+    margin-top: 4px;
     background: var(--ctp-mantle);
     border-radius: 2px;
     overflow: hidden;
 }
 
 th, td {
-    padding: 12px;
+    padding: 8px;
     text-align: left;
     border-bottom: 1px solid var(--ctp-surface0);
     font-size: 14px;
@@ -334,6 +334,7 @@ th {
     font-weight: 600;
     position: sticky;
     top: 0;
+    padding: 6px 8px;
 }
 
 tr:hover {
@@ -355,6 +356,39 @@ td:first-child {
 
 .payload {
     color: var(--ctp-peach);
+}
+
+/* Copyable cell styling */
+.copyable {
+    cursor: default;
+}
+
+.copyable .copy-icon {
+    display: inline-block;
+    margin-left: 6px;
+    opacity: 0;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 1px 3px;
+    border-radius: 3px;
+    background: var(--ctp-surface1);
+    transition: opacity 0.15s ease;
+    vertical-align: middle;
+}
+
+.copyable:hover .copy-icon {
+    opacity: 0.7;
+}
+
+.copyable .copy-icon:hover {
+    opacity: 1;
+    background: var(--ctp-surface2);
+}
+
+.copyable .copy-icon.copied {
+    opacity: 1;
+    background: var(--ctp-green);
+    color: var(--ctp-base);
 }
 
 .ulid {
@@ -505,21 +539,17 @@ td:first-child {
     cursor: pointer;
 }
 
-/* Retained message highlighting */
-.retained-message {
-    background-color: rgba(203, 166, 247, 0.1) !important;
-}
-
-.retained-message:hover {
-    background-color: rgba(203, 166, 247, 0.2) !important;
-}
-
 /* Retain column styling */
 td.retained {
-    text-align: left;
+    text-align: center;
     font-size: 16px;
+    width: 70px;
+}
+
+.retain-check {
     color: var(--ctp-green);
     font-weight: bold;
+    font-size: 18px;
 }
 
 /* Actions column styling */
@@ -555,11 +585,11 @@ td.actions {
 
 /* Publish controls styling */
 #publishTopic {
-    width: 340px;
+    width: 320px;
 }
 
 #publishMessage {
-    width: 500px;
+    width: 480px;
 }
 
 #publishQos {

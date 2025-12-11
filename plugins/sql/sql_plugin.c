@@ -401,17 +401,18 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
 
     // Check if this is a delete operation (empty retained message)
     if (ed->retain && ed->payloadlen == 0) {
-        // Delete all messages for this topic from database
+        // Delete only the LAST (most recent) message for this topic from database
+        // This preserves message history - only the currently retained message is removed
         if (delete_stmt != NULL) {
             char *topic = strdup(ed->topic);
             sqlite3_bind_text(delete_stmt, 1, topic, -1, SQLITE_STATIC);
             
             int rc = sqlite3_step(delete_stmt);
             if (rc != SQLITE_DONE) {
-                mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to delete topic %s: %s", topic, sqlite3_errmsg(msg_db));
+                mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to delete retained message for topic %s: %s", topic, sqlite3_errmsg(msg_db));
             } else {
                 int changes = sqlite3_changes(msg_db);
-                mosquitto_log_printf(MOSQ_LOG_INFO, "Deleted %d message(s) for topic: %s", changes, topic);
+                mosquitto_log_printf(MOSQ_LOG_INFO, "Deleted %d retained message for topic: %s", changes, topic);
             }
             sqlite3_reset(delete_stmt);
             free(topic);
@@ -491,7 +492,10 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
 			}
 
             // Prepare delete statement for clearing retained messages
-            rc = sqlite3_prepare_v2(msg_db, "DELETE FROM msg WHERE topic = ?1", -1, &delete_stmt, 0);
+            // Only deletes the MOST RECENT message for the topic (preserves history)
+            rc = sqlite3_prepare_v2(msg_db, 
+                "DELETE FROM msg WHERE ulid = (SELECT ulid FROM msg WHERE topic = ?1 ORDER BY ulid DESC LIMIT 1)", 
+                -1, &delete_stmt, 0);
             if (rc != SQLITE_OK) {
                 mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to prepare delete statement: %s", sqlite3_errmsg(msg_db));
             }

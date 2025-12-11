@@ -47,9 +47,12 @@
                         <option value="1000">1000</option>
                     </select>
                 </div>
+                <div class="control-group checkbox-group">
+                    <span class="checkbox-label">Auto-Refresh</span>
+                    <input type="checkbox" id="autoRefreshCheckbox" onchange="toggleAutoRefresh()">
+                </div>
                 <button onclick="loadMessages()">Apply</button>
                 <button onclick="clearFilter()">Clear</button>
-                <button id="autoRefreshBtn" onclick="toggleAutoRefresh()">Auto-Refresh</button>
                 <div class="separator-vertical"></div>
                 <div class="control-group flex-grow">
                     <label for="customQuery">Custom Query</label>
@@ -190,8 +193,31 @@
         // Use relative URL - served from same origin via Nginx, no CORS issues
         const API_BASE = '/db-admin';
         let autoRefreshInterval = null;
-        let isAutoRefreshEnabled = true;
+        let isAutoRefreshEnabled = false;
         let lastQueryResult = null;
+
+        // Copy text to clipboard and show feedback
+        function copyToClipboard(text, iconElement) {
+            navigator.clipboard.writeText(text).then(() => {
+                // Show copied feedback
+                const originalText = iconElement.textContent;
+                iconElement.textContent = '✓';
+                iconElement.classList.add('copied');
+                setTimeout(() => {
+                    iconElement.textContent = originalText;
+                    iconElement.classList.remove('copied');
+                }, 1000);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+            });
+        }
+
+        // Helper to create copyable cell HTML
+        function makeCopyableCell(className, value) {
+            const displayValue = value !== null && value !== undefined ? value : 'NULL';
+            const escapedValue = String(value || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            return `<td class="${className} copyable">${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
+        }
 
         // ULID timestamp extraction
         // ULID format: first 10 characters encode timestamp in milliseconds since Unix epoch
@@ -395,7 +421,7 @@
 
             // Turn off auto-refresh if it's currently enabled
             if (isAutoRefreshEnabled) {
-                toggleAutoRefresh();
+                toggleAutoRefresh(true);
             }
 
             // Reset last result since we're running a different query
@@ -469,15 +495,15 @@
                 const timestamp = ulid ? extractTimestampFromULID(ulid) : 'N/A';
                 html += `<td class="timestamp">${timestamp}</td>`;
                 
-                // Column 2: Topic
+                // Column 2: Topic (copyable)
                 const topicIndex = colMap['topic'];
                 const topic = topicIndex !== undefined ? row[topicIndex].value : 'N/A';
-                html += `<td class="topic">${topic !== null && topic !== undefined ? topic : 'NULL'}</td>`;
+                html += makeCopyableCell('topic', topic);
                 
-                // Column 3: Payload
+                // Column 3: Payload (copyable)
                 const payloadIndex = colMap['payload'];
                 const payload = payloadIndex !== undefined ? row[payloadIndex].value : 'N/A';
-                html += `<td class="payload">${payload !== null && payload !== undefined ? payload : 'NULL'}</td>`;
+                html += makeCopyableCell('payload', payload);
                 
                 // Column 4: Headers (ULID)
                 html += `<td class="ulid">${ulid !== null && ulid !== undefined ? ulid : 'NULL'}</td>`;
@@ -516,9 +542,12 @@
             loadMessages();
         }
 
-        function toggleAutoRefresh() {
-            isAutoRefreshEnabled = !isAutoRefreshEnabled;
-            const btn = document.getElementById('autoRefreshBtn');
+        function toggleAutoRefresh(forceOff = false) {
+            const checkbox = document.getElementById('autoRefreshCheckbox');
+            if (forceOff) {
+                checkbox.checked = false;
+            }
+            isAutoRefreshEnabled = checkbox.checked;
             const customQueryField = document.getElementById('customQuery');
             const executeBtn = document.getElementById('executeBtn');
             
@@ -530,9 +559,6 @@
                 customQueryField.disabled = true;
                 executeBtn.disabled = true;
                 
-                btn.textContent = 'Auto-Refresh';
-                btn.classList.add('btn-active');
-                
                 // Immediately load messages before starting the interval
                 loadMessages();
                 
@@ -542,8 +568,6 @@
                 customQueryField.disabled = false;
                 executeBtn.disabled = false;
                 
-                btn.textContent = 'Auto-Refresh';
-                btn.classList.remove('btn-active');
                 stopAutoRefresh();
             }
         }
@@ -576,16 +600,6 @@
             
             // Auto-refresh stats every 30 seconds
             setInterval(loadStats, 30000);
-            
-            // Start auto-refresh for messages
-            startAutoRefresh();
-            
-            // Set button to active state initially
-            document.getElementById('autoRefreshBtn').classList.add('btn-active');
-            
-            // Disable custom query controls initially (since auto-refresh starts enabled)
-            document.getElementById('customQuery').disabled = true;
-            document.getElementById('executeBtn').disabled = true;
         });
 
         // Allow Enter key in topic filter - handles both Database and Broker tabs
@@ -750,7 +764,7 @@
         // Map with topic as key - each topic has only one entry (latest message)
         let mqttMessagesMap = new Map();
         const MAX_TOPICS = 500;
-        const MQTT_TOPIC = '+/polo/#';  // Subscribe to all topics
+        const MQTT_TOPIC = '#';  // Subscribe to all topics
 
         // Auto-connect when Broker tab is opened
         async function initMqttConnection() {
@@ -814,7 +828,7 @@
                         timestamp: timestamp,
                         topic: topic,
                         payload: payload.toString(),
-                        retain: packet.retain || false
+                        retain: packet.retain === true
                     };
                     
                     // Update or add message by topic (topic is the unique key)
@@ -990,16 +1004,23 @@
                 //    row.classList.add('retained-message');
                 //}
                 
+                // Build retained column - show green checkmark for retained messages
+                const retainedHtml = msg.retain === true ? '<span class="retain-check">✓</span>' : '';
+                
                 // Build actions column - show trash icon only for retained messages
-                const actionsHtml = msg.retain 
-                    ? `<button class="delete-btn" onclick="deleteRetainedMessage('${msg.topic.replace(/'/g, "\\'")}')">🗑️</button>`
+                const actionsHtml = msg.retain === true
+                    ? `<button class="delete-btn" onclick="deleteRetainedMessage('${msg.topic.replace(/'/g, "\\'")}')" title="Delete retained message">🗑️</button>`
                     : '';
+                
+                // Build copyable cells for topic and payload
+                const topicCell = makeCopyableCell('topic', msg.topic);
+                const payloadCell = makeCopyableCell('payload', msg.payload);
                 
                 row.innerHTML = `
                     <td class="timestamp">${msg.timestamp}</td>
-                    <td class="topic">${msg.topic}</td>
-                    <td class="payload">${msg.payload}</td>
-                    <td class="retained">${msg.retain ? '✓' : ''}</td>
+                    ${topicCell}
+                    ${payloadCell}
+                    <td class="retained">${retainedHtml}</td>
                     <td class="actions">${actionsHtml}</td>
                 `;
                 tbody.appendChild(row);

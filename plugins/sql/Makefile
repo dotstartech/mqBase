@@ -2,7 +2,7 @@ include ../../config.mk
 
 .PHONY : all binary check clean reallyclean test install uninstall
 
-PLUGIN_NAME=msg_plugin
+PLUGIN_NAME=sql_plugin
 
 all : binary
 
