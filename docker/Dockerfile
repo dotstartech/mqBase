@@ -1,26 +1,25 @@
-FROM debian:trixie
-
-LABEL maintainer="dotStar Technologies" description="MQTT SQL Admin - Mosquitto MQTT Broker with libSQL Persistency and Web Admin Interface"
+FROM debian:trixie AS builder
 
 ENV VERSION=2.0.22 \
     LWS_VERSION=4.2.1 \
     LWS_SHA256=842da21f73ccba2be59e680de10a8cce7928313048750eb6ad73b6fa50763c51
 
-# Build arguments for user/group IDs
-ARG UID=1883
-ARG GID=1883
-
 COPY plugins/sql/sql_plugin.c /tmp/sql_plugin.c
 COPY plugins/sql/Makefile /tmp/Makefile
-COPY mosquitto/config/mosquitto.conf /tmp/mosquitto.conf
-COPY libsql/libsql.conf /tmp/libsql.conf
-COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
-COPY docker/run.sh /run.sh
-COPY admin /mosquitto/admin
-COPY docker/nginx-admin.conf /tmp/nginx-admin.conf
 
-RUN apt update && apt install -y build-essential cmake wget libssl-dev libcjson-dev ca-certificates libsqlite3-dev curl gosu nginx-light \
-    && wget https://github.com/warmcat/libwebsockets/archive/v${LWS_VERSION}.tar.gz -O /tmp/lws.tar.gz \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        wget \
+        ca-certificates \
+        libssl-dev \
+        libcjson-dev \
+        libsqlite3-dev \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build libwebsockets (static)
+RUN wget https://github.com/warmcat/libwebsockets/archive/v${LWS_VERSION}.tar.gz -O /tmp/lws.tar.gz \
     && echo "$LWS_SHA256  /tmp/lws.tar.gz" | sha256sum -c - \
     && mkdir -p /build/lws \
     && tar --strip=1 -xf /tmp/lws.tar.gz -C /build/lws \
@@ -40,11 +39,10 @@ RUN apt update && apt install -y build-essential cmake wget libssl-dev libcjson-
         -DLWS_WITH_SHARED=OFF \
         -DLWS_WITH_ZIP_FOPS=OFF \
         -DLWS_WITH_ZLIB=OFF \
-    && make -j "$(nproc)" \
-    && rm -rf /root/.cmake \
-    && curl --proto '=https' --tlsv1.2 -LsSf https://github.com/tursodatabase/libsql/releases/download/libsql-server-v0.24.32/libsql-server-installer.sh | sh \
-    && mv /root/.cargo/bin/sqld /usr/local/bin/sqld \
-    && curl -o /tmp/mosq.tar.gz https://mosquitto.org/files/source/mosquitto-${VERSION}.tar.gz \
+    && make -j "$(nproc)"
+
+# Build Mosquitto with plugins
+RUN curl -o /tmp/mosq.tar.gz https://mosquitto.org/files/source/mosquitto-${VERSION}.tar.gz \
     && mkdir -p /build/mosq \
     && tar --strip=1 -xf /tmp/mosq.tar.gz -C /build/mosq \
     && rm /tmp/mosq.tar.gz \
@@ -62,28 +60,55 @@ RUN apt update && apt install -y build-essential cmake wget libssl-dev libcjson-
         WITH_STRIP=yes \
         WITH_WEBSOCKETS=yes \
         prefix=/usr \
-        binary \
+        binary
+
+# Download sqld binary
+RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/tursodatabase/libsql/releases/download/libsql-server-v0.24.32/libsql-server-installer.sh | sh \
+    && mv /root/.cargo/bin/sqld /build/sqld
+
+FROM debian:trixie-slim
+
+LABEL maintainer="dotStar Technologies" \
+      description="MQTT SQL Admin - Mosquitto MQTT Broker with libSQL Persistency and Web Admin Interface"
+
+# Build arguments for user/group IDs
+ARG UID=1883
+ARG GID=1883
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl3t64 \
+        libcjson1 \
+        libsqlite3-0 \
+        gosu \
+        nginx-light \
+    && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid ${GID} admin \
     && useradd --gid ${GID} --uid ${UID} --no-create-home --shell /sbin/nologin admin \
-    && mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log \
-    && install -d /usr/sbin/ \
-    && install -s -m644 /build/mosq/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so.1 \
-    && install -s -m755 /build/mosq/src/mosquitto /usr/sbin/mosquitto \
-    && install -s -m755 /build/mosq/plugins/dynamic-security/mosquitto_dynamic_security.so /usr/lib/mosquitto_dynamic_security.so \
-    && install -s -m755 /build/mosq/plugins/sql/sql_plugin.so /usr/lib/sql_plugin.so \
-    && install -m644 /tmp/mosquitto.conf /mosquitto/config/mosquitto.conf \
-    && install -m644 /tmp/libsql.conf /mosquitto/config/libsql.conf \
-    && mv /run.sh /mosquitto \
-    && chown -R admin:admin /mosquitto \
-    && chmod +x /mosquitto/run.sh \
-    && mv /tmp/nginx-admin.conf /etc/nginx/nginx.conf \
+    && mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/admin \
     && mkdir -p /var/log/nginx /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi \
-    && chown -R admin:admin /var/log/nginx /tmp/nginx_* \
-    && chmod -R 755 /var/log/nginx /tmp/nginx_* \
-    && apt -y purge curl build-essential wget cmake \
-    && apt -y autoremove \
-    && apt -y clean \
-    && rm -rf /build /tmp/* /var/lib/apt/lists/*
+    && chown -R admin:admin /mosquitto /var/log/nginx /tmp/nginx_*
+
+# Copy binaries from builder
+COPY --from=builder /build/mosq/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so.1
+COPY --from=builder /build/mosq/src/mosquitto /usr/sbin/mosquitto
+COPY --from=builder /build/mosq/plugins/dynamic-security/mosquitto_dynamic_security.so /usr/lib/mosquitto_dynamic_security.so
+COPY --from=builder /build/mosq/plugins/sql/sql_plugin.so /usr/lib/sql_plugin.so
+COPY --from=builder /build/sqld /usr/local/bin/sqld
+
+# Copy configuration and scripts
+COPY mosquitto/config/mosquitto.conf /mosquitto/config/mosquitto.conf
+COPY libsql/libsql.conf /mosquitto/config/libsql.conf
+COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
+COPY docker/run.sh /mosquitto/run.sh
+COPY docker/nginx-admin.conf /etc/nginx/nginx.conf
+COPY admin /mosquitto/admin
+
+# Set permissions
+RUN chmod +x /docker-entrypoint.sh /mosquitto/run.sh \
+    && chown -R admin:admin /mosquitto
+
+WORKDIR /mosquitto/
 
 VOLUME ["/mosquitto/data", "/mosquitto/log"]
 
@@ -98,9 +123,5 @@ EXPOSE 8080
 # libSQL queries over HTTP
 EXPOSE 8000
 
-WORKDIR /mosquitto/
-
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["./run.sh"]
-#CMD ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
-#CMD ["tail", "-f", "/dev/null"]
+CMD ["/mosquitto/run.sh"]
