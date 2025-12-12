@@ -25,12 +25,15 @@ services:
     secrets:
       - dynsec.json
       - msa.secrets
+      - msa.properties
     restart: always
 
 secrets:
   dynsec.json:
     external: true
   msa.secrets:
+    external: true
+  msa.properties:
     external: true
 
 volumes:

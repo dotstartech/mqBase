@@ -17,6 +17,7 @@ To start the MQTT SQL Admin as Docker Swarm service
 docker network create --driver overlay dev-proxy
 docker secret create dynsec.json mosquitto/config/dynsec.json
 docker secret create msa.secrets msa.secrets
+docker secret create msa.properties msa.properties
 docker stack deploy -c compose.yml msa
 ```
 
@@ -24,6 +25,21 @@ The `msa.secrets` file contains environment variables for the admin UI to connec
 ```
 MSA_MQTT_USER=admin:admin
 ```
+
+The `msa.properties` file contains application configuration:
+```properties
+version=0.2.0
+title=MQTT SQL Admin
+logo=admin/logo.png
+favicon=admin/logo.png
+```
+
+| Property | Description |
+|----------|-------------|
+| `version` | Application version (used by build/deploy scripts) |
+| `title` | Title displayed in the web UI header (default: "MQTT SQL Admin") |
+| `logo` | Path to logo image displayed in the header (optional, no logo if empty) |
+| `favicon` | Path to favicon displayed in the browser tab (optional, no icon if empty) |
 
 The `dynsec.json` file defines the Mosquitto dynamic security configuration with two users:
 - `admin:admin` — Full access to all topics (for admin UI)

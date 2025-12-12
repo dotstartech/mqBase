@@ -45,6 +45,25 @@ if [ "$user" = '0' ]; then
 		fi
 	fi
 	
+	# Parse msa.properties and create app config JSON for web client
+	if [ -f /run/secrets/msa.properties ]; then
+		# Extract version, title, logo, and favicon values
+		app_version=$(grep "^version=" /run/secrets/msa.properties | cut -d'=' -f2-)
+		app_title=$(grep "^title=" /run/secrets/msa.properties | cut -d'=' -f2-)
+		app_logo=$(grep "^logo=" /run/secrets/msa.properties | cut -d'=' -f2-)
+		app_favicon=$(grep "^favicon=" /run/secrets/msa.properties | cut -d'=' -f2-)
+		
+		# Create JSON file with version, title, logo, and favicon (empty values if not set)
+		echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
+		chown admin:admin /tmp/app-config.json
+		chmod 644 /tmp/app-config.json
+	else
+		# Create empty config if no properties file
+		echo "{\"version\":\"\",\"title\":\"\",\"logo\":\"\",\"favicon\":\"\"}" > /tmp/app-config.json
+		chown admin:admin /tmp/app-config.json
+		chmod 644 /tmp/app-config.json
+	fi
+	
 	# Switch to admin user and execute the command
 	exec gosu admin "$@"
 else

@@ -1,0 +1,1104 @@
+// MQTT SQL Admin - JavaScript Application
+// =============================================================================
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+// Use relative URL - served from same origin via Nginx, no CORS issues
+const API_BASE = '/db-admin';
+
+// =============================================================================
+// State Variables
+// =============================================================================
+
+let autoRefreshInterval = null;
+let isAutoRefreshEnabled = false;
+let lastQueryResult = null;
+
+// MQTT state
+let mqttClient = null;
+// Map with topic as key - each topic has only one entry (latest message)
+let mqttMessagesMap = new Map();
+const MAX_TOPICS = 500;
+const MQTT_TOPIC = '#';  // Subscribe to all topics
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+// Copy text to clipboard and show feedback
+function copyToClipboard(text, iconElement) {
+    navigator.clipboard.writeText(text).then(() => {
+        // Show copied feedback
+        const originalText = iconElement.textContent;
+        iconElement.textContent = '✓';
+        iconElement.classList.add('copied');
+        setTimeout(() => {
+            iconElement.textContent = originalText;
+            iconElement.classList.remove('copied');
+        }, 1000);
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+    });
+}
+
+// Helper to create copyable cell HTML
+function makeCopyableCell(className, value) {
+    const displayValue = value !== null && value !== undefined ? value : 'NULL';
+    const escapedValue = String(value || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return `<td class="${className} copyable">${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
+}
+
+// ULID timestamp extraction
+// ULID format: first 10 characters encode timestamp in milliseconds since Unix epoch
+function extractTimestampFromULID(ulid) {
+    if (!ulid || ulid.length < 10) {
+        return 'Invalid ULID';
+    }
+    
+    // Crockford's Base32 alphabet used in ULID
+    const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    
+    try {
+        // Extract first 10 characters (timestamp portion)
+        const timestampPart = ulid.substring(0, 10).toUpperCase();
+        
+        // Decode from Base32 to get milliseconds
+        let timestamp = 0;
+        for (let i = 0; i < timestampPart.length; i++) {
+            const char = timestampPart[i];
+            const value = ENCODING.indexOf(char);
+            if (value === -1) {
+                return 'Invalid ULID';
+            }
+            timestamp = timestamp * 32 + value;
+        }
+        
+        // Convert milliseconds to JavaScript Date
+        const date = new Date(timestamp);
+        
+        // Format as YYYY-MM-DD HH:MM:SS.mmm
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
+        
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
+    } catch (error) {
+        console.error('Error extracting timestamp from ULID:', error);
+        return 'Error';
+    }
+}
+
+// MQTT topic matching with wildcards (+ and #)
+// Pattern: the filter pattern that may contain + and # wildcards
+// Topic: the actual topic string to match against
+// Returns true if topic matches the pattern, false otherwise
+function mqttTopicMatches(pattern, topic) {
+    // Empty pattern matches nothing
+    if (!pattern) return false;
+    
+    // If no wildcards, do exact match
+    if (!pattern.includes('+') && !pattern.includes('#')) {
+        return pattern === topic;
+    }
+    
+    const patternLevels = pattern.split('/');
+    const topicLevels = topic.split('/');
+    
+    let pi = 0; // pattern index
+    let ti = 0; // topic index
+    
+    while (pi < patternLevels.length) {
+        const patternLevel = patternLevels[pi];
+        
+        if (patternLevel === '#') {
+            // '#' must be the last level in the pattern
+            // It matches zero or more remaining levels
+            return true;
+        } else if (patternLevel === '+') {
+            // '+' matches exactly one level
+            if (ti >= topicLevels.length) {
+                // No more topic levels to match
+                return false;
+            }
+            // Move to next level in both pattern and topic
+            pi++;
+            ti++;
+        } else {
+            // Literal match required
+            if (ti >= topicLevels.length || patternLevel !== topicLevels[ti]) {
+                return false;
+            }
+            pi++;
+            ti++;
+        }
+    }
+    
+    // Pattern exhausted - topic must also be exhausted for a match
+    return ti === topicLevels.length;
+}
+
+// =============================================================================
+// Cookie Helper Functions
+// =============================================================================
+
+function setCookie(name, value, days) {
+    const expires = new Date();
+    expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
+    document.cookie = `${name}=${encodeURIComponent(value)};expires=${expires.toUTCString()};path=/;SameSite=Lax`;
+}
+
+function getCookie(name) {
+    const nameEQ = name + '=';
+    const cookies = document.cookie.split(';');
+    for (let i = 0; i < cookies.length; i++) {
+        let cookie = cookies[i].trim();
+        if (cookie.indexOf(nameEQ) === 0) {
+            return decodeURIComponent(cookie.substring(nameEQ.length));
+        }
+    }
+    return null;
+}
+
+// =============================================================================
+// Database Tab Functions
+// =============================================================================
+
+async function executeSQL(sql) {
+    try {
+        const response = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                stmt: [sql]
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.code) {
+            throw new Error(data.message || 'SQL execution error');
+        }
+
+        return data;
+    } catch (error) {
+        console.error('SQL execution error:', error);
+        throw error;
+    }
+}
+
+async function loadStats() {
+    // Show connecting state
+    document.getElementById('dbStatusIcon').textContent = '🟡';
+    
+    try {
+        // Simple query to test database connectivity
+        const result = await executeSQL(`SELECT COUNT(*) FROM msg LIMIT 1`);
+        if (result.result) {
+            document.getElementById('dbStatusIcon').textContent = '🟢';
+        }
+    } catch (error) {
+        console.error('Error loading stats:', error);
+        document.getElementById('dbStatusIcon').textContent = '🔴';
+    }
+}
+
+async function loadMessages() {
+    // Clear custom query field to indicate we're using filters now
+    document.getElementById('customQuery').value = '';
+    
+    const topicFilter = document.getElementById('topicFilter').value.trim();
+    const timeFilter = document.getElementById('timeFilter').value;
+    const limit = document.getElementById('limit').value;
+    
+    // Select only the essential columns: topic, payload, ulid (headers contains ulid)
+    let sql = `SELECT topic, payload, ulid FROM msg`;
+    
+    let whereConditions = [];
+    
+    // Add topic filter
+    if (topicFilter) {
+        if (topicFilter.includes('%')) {
+            whereConditions.push(`topic LIKE '${topicFilter}'`);
+        } else {
+            whereConditions.push(`topic = '${topicFilter}'`);
+        }
+    }
+    
+    // Add time filter (timestamp is in seconds, not milliseconds)
+    if (timeFilter !== 'all') {
+        const days = parseInt(timeFilter);
+        const cutoffTimestamp = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
+        whereConditions.push(`timestamp >= ${cutoffTimestamp}`);
+    }
+    
+    // Combine WHERE conditions with AND
+    if (whereConditions.length > 0) {
+        sql += ` WHERE ` + whereConditions.join(' AND ');
+    }
+    sql += ` ORDER BY timestamp DESC LIMIT ${limit}`;
+
+    // Only show loading on first load or manual refresh (not during auto-refresh)
+    if (!lastQueryResult) {
+        showLoading();
+    }
+    
+    try {
+        const result = await executeSQL(sql);
+        
+        // Compare with last result to avoid unnecessary updates
+        if (hasResultChanged(result)) {
+            displayResults(result);
+            lastQueryResult = result;
+        }
+    } catch (error) {
+        showMessage(`Error: ${error.message}`, 'error');
+        document.getElementById('results').innerHTML = '';
+        lastQueryResult = null;
+    }
+}
+
+async function executeCustomQuery() {
+    const query = document.getElementById('customQuery').value.trim();
+    if (!query) {
+        showMessage('Please enter a SQL query', 'error');
+        return;
+    }
+
+    // Turn off auto-refresh if it's currently enabled
+    if (isAutoRefreshEnabled) {
+        toggleAutoRefresh(true);
+    }
+
+    // Reset last result since we're running a different query
+    lastQueryResult = null;
+
+    showLoading();
+    
+    try {
+        const result = await executeSQL(query);
+        displayResults(result);
+    } catch (error) {
+        showMessage(`Error: ${error.message}`, 'error');
+        document.getElementById('results').innerHTML = '';
+    }
+}
+
+function hasResultChanged(newResult) {
+    // If no previous result, consider it changed
+    if (!lastQueryResult) {
+        return true;
+    }
+    
+    // Quick check: compare JSON stringified versions
+    // This is efficient and catches all differences in structure and data
+    try {
+        const oldJson = JSON.stringify(lastQueryResult);
+        const newJson = JSON.stringify(newResult);
+        return oldJson !== newJson;
+    } catch (error) {
+        // If comparison fails, assume changed to be safe
+        console.error('Error comparing results:', error);
+        return true;
+    }
+}
+
+function displayResults(data) {
+    const resultsDiv = document.getElementById('results');
+    if (!data.result) {
+        resultsDiv.innerHTML = '<div class="no-results">No results returned</div>';
+        return;
+    }
+
+    const result = data.result;
+    if (!result.rows || result.rows.length === 0) {
+        resultsDiv.innerHTML = '<div class="no-results">No messages found</div>';
+        return;
+    }
+
+    // Create a map of column indices (case-insensitive)
+    const colMap = {};
+    result.cols.forEach((col, index) => {
+        colMap[col.name.toLowerCase()] = index;
+    });
+
+    // Standard 4-column table header
+    let html = '<table><thead><tr>';
+    html += '<th>Timestamp</th>';
+    html += '<th>Topic</th>';
+    html += '<th>Payload</th>';
+    html += '<th>Headers</th>';
+    html += '</tr></thead><tbody>';
+    
+    // Build rows with standard 4-column format
+    result.rows.forEach(row => {
+        html += '<tr>';
+        
+        // Column 1: Timestamp (extracted from ULID)
+        const ulidIndex = colMap['ulid'];
+        const ulid = ulidIndex !== undefined ? row[ulidIndex].value : null;
+        const timestamp = ulid ? extractTimestampFromULID(ulid) : 'N/A';
+        html += `<td class="timestamp">${timestamp}</td>`;
+        
+        // Column 2: Topic (copyable)
+        const topicIndex = colMap['topic'];
+        const topic = topicIndex !== undefined ? row[topicIndex].value : 'N/A';
+        html += makeCopyableCell('topic', topic);
+        
+        // Column 3: Payload (copyable)
+        const payloadIndex = colMap['payload'];
+        const payload = payloadIndex !== undefined ? row[payloadIndex].value : 'N/A';
+        html += makeCopyableCell('payload', payload);
+        
+        // Column 4: Headers (ulid)
+        const headersContent = ulid !== null && ulid !== undefined ? `<span class="header-item"><span class="header-name">ulid:</span> ${ulid}</span>` : '';
+        html += `<td class="headers">${headersContent}</td>`;
+        html += '</tr>';
+    });
+    
+    html += '</tbody></table>';
+    resultsDiv.innerHTML = html;
+}
+
+function showLoading() {
+    document.getElementById('results').innerHTML = `
+        <div class="loading">
+            <div class="spinner"></div>
+            <p>Loading...</p>
+        </div>
+    `;
+}
+
+function showMessage(text, type) {
+    const messageDiv = document.getElementById('message');
+    messageDiv.className = type;
+    messageDiv.textContent = text;
+    messageDiv.style.display = 'block';
+    
+    setTimeout(() => {
+        messageDiv.style.display = 'none';
+    }, 5000);
+}
+
+function clearFilter() {
+    document.getElementById('topicFilter').value = '';
+    document.getElementById('timeFilter').value = '7';
+    document.getElementById('customQuery').value = '';
+    lastQueryResult = null; // Reset comparison cache
+    loadMessages();
+}
+
+function toggleAutoRefresh(forceOff = false) {
+    const checkbox = document.getElementById('autoRefreshCheckbox');
+    if (forceOff) {
+        checkbox.checked = false;
+    }
+    isAutoRefreshEnabled = checkbox.checked;
+    const customQueryField = document.getElementById('customQuery');
+    const executeBtn = document.getElementById('executeBtn');
+    
+    if (isAutoRefreshEnabled) {
+        // Clear custom query field when enabling auto-refresh
+        customQueryField.value = '';
+        
+        // Disable custom query controls
+        customQueryField.disabled = true;
+        executeBtn.disabled = true;
+        
+        // Immediately load messages before starting the interval
+        loadMessages();
+        
+        startAutoRefresh();
+    } else {
+        // Enable custom query controls
+        customQueryField.disabled = false;
+        executeBtn.disabled = false;
+        
+        stopAutoRefresh();
+    }
+}
+
+function startAutoRefresh() {
+    // Clear any existing interval
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+    }
+    
+    // Set up new interval - refresh every 5 seconds
+    autoRefreshInterval = setInterval(() => {
+        if (isAutoRefreshEnabled && document.getElementById('database-tab').classList.contains('active')) {
+            loadMessages();
+        }
+    }, 5000);
+}
+
+function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+    }
+}
+
+// =============================================================================
+// Tab Navigation
+// =============================================================================
+
+function switchTab(tabName) {
+    // Save active tab to cookie
+    setCookie('activeTab', tabName, 365);
+    
+    // Update tab buttons
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    event.target.classList.add('active');
+
+    // Update tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`${tabName}-tab`).classList.add('active');
+
+    // Load ACL data if switching to ACL tab
+    if (tabName === 'acl' && !window.aclDataLoaded) {
+        loadBrokerConfig();
+    }
+
+    // Auto-connect MQTT if switching to Broker tab
+    if (tabName === 'broker' && !window.mqttConnected) {
+        setTimeout(() => {
+            initMqttConnection();
+            window.mqttConnected = true;
+        }, 100);
+    }
+    
+    // Display messages when switching to Broker tab
+    if (tabName === 'broker') {
+        setTimeout(() => {
+            displayMqttMessages();
+        }, 150);
+    }
+}
+
+// Restore active tab from cookie
+function restoreActiveTab() {
+    const savedTab = getCookie('activeTab');
+    if (savedTab && ['database', 'broker', 'acl'].includes(savedTab)) {
+        // Find and click the corresponding tab button
+        const tabs = document.querySelectorAll('.tab');
+        tabs.forEach(tab => {
+            if (tab.textContent.toLowerCase().includes(savedTab)) {
+                tab.click();
+            }
+        });
+    }
+}
+
+// =============================================================================
+// ACL Tab Functions
+// =============================================================================
+
+async function loadBrokerConfig() {
+    try {
+        const response = await fetch('/broker-config');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const config = await response.json();
+        
+        displayBrokerSummary(config);
+        displayClients(config.clients || []);
+        displayRoles(config.roles || []);
+        displayDefaultACL(config.defaultACLAccess || {});
+        
+        window.aclDataLoaded = true;
+    } catch (error) {
+        console.error('Error loading ACL config:', error);
+    }
+}
+
+function displayBrokerSummary(config) {
+    // Summary statistics removed from UI
+}
+
+function displayClients(clients) {
+    const tbody = document.querySelector('#clients-table tbody');
+    tbody.innerHTML = '';
+    
+    clients.forEach(client => {
+        const roles = (client.roles || []).map(r => r.rolename).join(', ');
+        const displayName = client.textname || '-';
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="topic">${client.username}</td>
+            <td>${displayName}</td>
+            <td class="payload">${roles}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function displayRoles(roles) {
+    const tbody = document.querySelector('#roles-table tbody');
+    tbody.innerHTML = '';
+    
+    roles.forEach(role => {
+        const acls = role.acls || [];
+        const aclCount = acls.length;
+        
+        let aclsHtml = '';
+        acls.forEach(acl => {
+            const aclClass = acl.allow ? 'acl-allow' : 'acl-deny';
+            const allowText = acl.allow ? '✓' : '✗';
+            aclsHtml += `<div class="acl-item"><span class="${aclClass}">${allowText}</span> ${acl.acltype}: ${acl.topic}</div>`;
+        });
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="topic">${role.rolename}</td>
+            <td class="timestamp">${aclCount}</td>
+            <td>${aclsHtml || '-'}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function displayDefaultACL(defaultACL) {
+    const container = document.getElementById('default-acl');
+    let html = '<table class="broker-table">';
+    html += '<tr><th>Permission</th><th>Allowed</th></tr>';
+    
+    Object.entries(defaultACL).forEach(([key, value]) => {
+        const valueClass = value ? 'acl-allow' : 'acl-deny';
+        const valueText = value ? '✓ Allowed' : '✗ Denied';
+        html += `<tr><td>${key}</td><td class="${valueClass}">${valueText}</td></tr>`;
+    });
+    html += '</table>';
+    container.innerHTML = html;
+}
+
+// =============================================================================
+// MQTT Broker Tab Functions
+// =============================================================================
+
+async function initMqttConnection() {
+    if (mqttClient && mqttClient.connected) {
+        console.log('MQTT already connected');
+        return;
+    }
+
+    // WebSocket URL - use wss:// for HTTPS, ws:// for HTTP
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/mqtt`;
+    
+    try {
+        updateMqttStatus('Connecting...', '🟡', 'var(--ctp-yellow)');
+        
+        // Fetch MQTT credentials from server
+        let username = 'admin';
+        let password = 'admin';
+        
+        try {
+            const credResponse = await fetch('/mqtt-credentials');
+            if (credResponse.ok) {
+                const credentials = await credResponse.json();
+                username = credentials.username;
+                password = credentials.password;
+                console.log('Loaded MQTT credentials from server');
+            } else {
+                console.warn('Could not load MQTT credentials, using defaults');
+            }
+        } catch (err) {
+            console.warn('Error loading MQTT credentials, using defaults:', err);
+        }
+        
+        mqttClient = mqtt.connect(wsUrl, {
+            clientId: 'msa-admin-' + Math.random().toString(16).substr(2, 8),
+            username: username,
+            password: password,
+            clean: true,
+            reconnectPeriod: 5000,
+            protocolVersion: 5,  // MQTT v5 for retain-as-published support
+        });
+
+        mqttClient.on('connect', () => {
+            console.log('MQTT connected');
+            
+            // Subscribe to topic with Retain As Published (rap) option
+            mqttClient.subscribe(MQTT_TOPIC, { rap: true }, (err) => {
+                if (err) {
+                    console.error('Subscribe error:', err);
+                    updateMqttStatus('Error', '❌', 'var(--ctp-red)');
+                } else {
+                    console.log('Subscribed to:', MQTT_TOPIC);
+                    updateMqttStatus(`Connected`, '🟢', 'var(--ctp-green)');
+                }
+            });
+        });
+
+        mqttClient.on('message', (topic, payload, packet) => {
+            const timestamp = new Date().toISOString().replace('T', ' ').substr(0, 23);
+            
+            // Extract ULID from MQTT v5 user properties if available
+            let ulid = null;
+            if (packet.properties && packet.properties.userProperties) {
+                const userProps = packet.properties.userProperties;
+                // userProperties can be an object with key-value pairs
+                if (userProps.ulid) {
+                    ulid = userProps.ulid;
+                }
+            }
+            
+            const message = {
+                timestamp: timestamp,
+                topic: topic,
+                payload: payload.toString(),
+                retain: packet.retain === true,
+                ulid: ulid
+            };
+            
+            // Update or add message by topic (topic is the unique key)
+            mqttMessagesMap.set(topic, message);
+            
+            // If we exceed MAX_TOPICS, remove oldest entries
+            // Map maintains insertion order, so we remove from the beginning
+            if (mqttMessagesMap.size > MAX_TOPICS) {
+                const firstKey = mqttMessagesMap.keys().next().value;
+                mqttMessagesMap.delete(firstKey);
+            }
+            
+            displayMqttMessages();
+        });
+
+        mqttClient.on('error', (err) => {
+            console.error('MQTT error:', err);
+            updateMqttStatus('Error', '❌', 'var(--ctp-red)');
+        });
+
+        mqttClient.on('close', () => {
+            console.log('MQTT disconnected');
+            updateMqttStatus('Disconnected', '⚫', 'var(--ctp-subtext0)');
+        });
+
+        mqttClient.on('reconnect', () => {
+            console.log('MQTT reconnecting...');
+            updateMqttStatus('Reconnecting...', '🟡', 'var(--ctp-yellow)');
+        });
+
+    } catch (error) {
+        console.error('Connection error:', error);
+        updateMqttStatus('Error', '❌', 'var(--ctp-red)');
+    }
+}
+
+function updateMqttStatus(text, icon, color) {
+    const statusIcon = document.getElementById('mqttStatusIcon');
+    if (statusIcon) {
+        statusIcon.textContent = icon;
+        if (color) {
+            statusIcon.style.color = color;
+        }
+    }
+}
+
+// Publish a message to the MQTT broker
+function publishMessage() {
+    if (!mqttClient || !mqttClient.connected) {
+        console.error('MQTT client not connected, cannot publish message');
+        alert('MQTT client not connected. Please wait for connection.');
+        return;
+    }
+    
+    const topicInput = document.getElementById('publishTopic');
+    const messageInput = document.getElementById('publishMessage');
+    const retainedCheckbox = document.getElementById('publishRetained');
+    const qosSelect = document.getElementById('publishQos');
+    
+    const topic = topicInput ? topicInput.value.trim() : '';
+    const message = messageInput ? messageInput.value : '';
+    const retained = retainedCheckbox ? retainedCheckbox.checked : false;
+    const qos = qosSelect ? parseInt(qosSelect.value) : 2;
+    
+    if (!topic) {
+        alert('Please enter a topic');
+        topicInput.focus();
+        return;
+    }
+    
+    mqttClient.publish(topic, message, { retain: retained, qos: qos }, (err) => {
+        if (err) {
+            console.error('Failed to publish message:', err);
+            alert('Failed to publish message: ' + err.message);
+        } else {
+            console.log(`Published message to ${topic} (QoS: ${qos}, Retained: ${retained})`);
+            // Clear the message input but keep topic for convenience
+            messageInput.value = '';
+        }
+    });
+}
+
+// Delete a retained message by publishing an empty payload with retain flag
+// This clears the retained message from the broker (and triggers DB deletion via plugin)
+// If ulid is provided, it's passed as a user property for targeted deletion
+function deleteRetainedMessage(topic, ulid) {
+    if (!mqttClient || !mqttClient.connected) {
+        console.error('MQTT client not connected, cannot delete retained message');
+        alert('MQTT client not connected. Please wait for connection.');
+        return;
+    }
+    
+    if (!confirm(`Delete retained message for topic:\n${topic}?`)) {
+        return;
+    }
+    
+    // Build publish options with retain flag
+    const publishOptions = { 
+        retain: true, 
+        qos: 1
+    };
+    
+    // If ULID is available, pass it as a user property for targeted deletion
+    if (ulid) {
+        publishOptions.properties = {
+            userProperties: {
+                ulid: ulid
+            }
+        };
+        console.log('Deleting message with ULID:', ulid);
+    }
+    
+    // Publish empty payload with retain flag to clear the retained message
+    mqttClient.publish(topic, '', publishOptions, (err) => {
+        if (err) {
+            console.error('Failed to delete retained message:', err);
+            alert('Failed to delete retained message: ' + err.message);
+        } else {
+            console.log('Deleted retained message for topic:', topic, ulid ? `(ulid: ${ulid})` : '(no ulid)');
+            // Remove from local map and refresh display
+            mqttMessagesMap.delete(topic);
+            displayMqttMessages();
+        }
+    });
+}
+
+function displayMqttMessages() {
+    const tbody = document.querySelector('#mqtt-messages-table tbody');
+    if (!tbody) {
+        console.log('ERROR: tbody not found');
+        return;
+    }
+    
+    console.log('displayMqttMessages called, total topics:', mqttMessagesMap.size);
+    
+    // Get filter values
+    const filterInput = document.getElementById('brokerTopicFilter');
+    const filterValue = filterInput ? filterInput.value.trim() : '';
+    
+    const timeFilterSelect = document.getElementById('brokerTimeFilter');
+    const timeFilterValue = timeFilterSelect ? timeFilterSelect.value : 'all';
+    
+    const limitSelect = document.getElementById('brokerLimit');
+    const limitValue = limitSelect ? parseInt(limitSelect.value) : 100;
+
+    const persistentOnlyCheckbox = document.getElementById('persistentOnlyFilter');
+    const persistentOnly = persistentOnlyCheckbox ? persistentOnlyCheckbox.checked : false;
+    
+    console.log('Filters - topic:', filterValue, 'time:', timeFilterValue, 'limit:', limitValue, 'persistentOnly:', persistentOnly);
+    
+    // Convert Map values to array and sort by timestamp (newest first)
+    let filteredMessages = Array.from(mqttMessagesMap.values())
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // Apply persistent-only filter
+    if (persistentOnly) {
+        filteredMessages = filteredMessages.filter(msg => msg.retain === true);
+    }
+    
+    // Apply topic filter with MQTT wildcard support (+ and #)
+    if (filterValue) {
+        filteredMessages = filteredMessages.filter(msg => 
+            mqttTopicMatches(filterValue, msg.topic)
+        );
+    }
+    
+    // Apply time range filter (messages have ISO timestamp)
+    if (timeFilterValue !== 'all') {
+        const minutesAgo = parseInt(timeFilterValue);
+        const cutoffTime = new Date(Date.now() - minutesAgo * 60 * 1000);
+        filteredMessages = filteredMessages.filter(msg => {
+            const msgTime = new Date(msg.timestamp);
+            return msgTime >= cutoffTime;
+        });
+    }
+    
+    // Apply limit (take first N messages)
+    filteredMessages = filteredMessages.slice(0, limitValue);
+    
+    console.log('Filtered messages:', filteredMessages.length);
+    
+    tbody.innerHTML = '';
+    
+    filteredMessages.forEach(msg => {
+        const row = document.createElement('tr');
+        // Use topic as unique row identifier for potential future in-place updates
+        row.dataset.topic = msg.topic;
+        
+        // Build retained column - show green checkmark for retained messages
+        const retainedHtml = msg.retain === true ? '<span class="retain-check">✓</span>' : '';
+        
+        // Build actions column - show trash icon only for retained messages
+        // Pass both topic and ulid (if available) for targeted deletion
+        const escapedTopic = msg.topic.replace(/'/g, "\\'");
+        const escapedUlid = msg.ulid ? msg.ulid.replace(/'/g, "\\'") : '';
+        const actionsHtml = msg.retain === true
+            ? `<button class="delete-btn" onclick="deleteRetainedMessage('${escapedTopic}', '${escapedUlid}')" title="Delete retained message">🗑️</button>`
+            : '';
+        
+        // Build copyable cells for topic and payload
+        const topicCell = makeCopyableCell('topic', msg.topic);
+        const payloadCell = makeCopyableCell('payload', msg.payload);
+        
+        // Build headers column showing ulid if available
+        const headersHtml = msg.ulid ? `<span class="header-item"><span class="header-name">ulid:</span> ${msg.ulid}</span>` : '';
+        
+        row.innerHTML = `
+            <td class="timestamp">${msg.timestamp}</td>
+            ${topicCell}
+            ${payloadCell}
+            <td class="headers">${headersHtml}</td>
+            <td class="retained">${retainedHtml}</td>
+            <td class="actions">${actionsHtml}</td>
+        `;
+        tbody.appendChild(row);
+    });
+    
+    console.log('Table updated with', filteredMessages.length, 'rows');
+}
+
+function clearMqttMessages() {
+    // Clear the filter input
+    const filterInput = document.getElementById('brokerTopicFilter');
+    if (filterInput) {
+        filterInput.value = '';
+    }
+    
+    // Reset time filter to default (Last 6 Hours)
+    const timeFilterSelect = document.getElementById('brokerTimeFilter');
+    if (timeFilterSelect) {
+        timeFilterSelect.value = '360';
+    }
+    
+    // Reset limit to default (100)
+    const limitSelect = document.getElementById('brokerLimit');
+    if (limitSelect) {
+        limitSelect.value = '100';
+    }
+
+    // Clear the persistent-only checkbox
+    const persistentOnlyCheckbox = document.getElementById('persistentOnlyFilter');
+    if (persistentOnlyCheckbox) {
+        persistentOnlyCheckbox.checked = false;
+    }
+
+    // Redisplay messages with reset filters (messages remain in map)
+    displayMqttMessages();
+}
+
+// =============================================================================
+// Settings Menu Functions
+// =============================================================================
+
+function toggleSettingsMenu() {
+    const menu = document.getElementById('settingsMenu');
+    const isOpen = menu.classList.contains('active');
+    
+    if (isOpen) {
+        closeSettingsMenu();
+    } else {
+        // Update checkmarks based on current font
+        updateFontCheckmarks();
+        menu.classList.add('active');
+        
+        // Close menu when clicking outside
+        setTimeout(() => {
+            document.addEventListener('click', closeSettingsMenuOnClickOutside);
+        }, 0);
+    }
+}
+
+function closeSettingsMenu() {
+    const menu = document.getElementById('settingsMenu');
+    menu.classList.remove('active');
+    document.removeEventListener('click', closeSettingsMenuOnClickOutside);
+}
+
+function closeSettingsMenuOnClickOutside(event) {
+    const menu = document.getElementById('settingsMenu');
+    const btn = document.querySelector('.settings-btn');
+    if (!menu.contains(event.target) && !btn.contains(event.target)) {
+        closeSettingsMenu();
+    }
+}
+
+function updateFontCheckmarks() {
+    const currentFont = getCookie('tableFont') || "'JetBrains Mono', monospace";
+    document.querySelectorAll('.menu-check').forEach(check => {
+        if (check.dataset.font === currentFont) {
+            check.classList.add('visible');
+        } else {
+            check.classList.remove('visible');
+        }
+    });
+}
+
+function selectFont(fontFamily) {
+    // Save to cookie
+    setCookie('tableFont', fontFamily, 365);
+    
+    // Apply font
+    applyTableFont(fontFamily);
+    
+    // Update checkmarks
+    updateFontCheckmarks();
+    
+    // Close menu
+    closeSettingsMenu();
+}
+
+function applyTableFont(fontFamily) {
+    document.documentElement.style.setProperty('--table-font', fontFamily);
+}
+
+function loadFontPreference() {
+    const savedFont = getCookie('tableFont') || "'JetBrains Mono', monospace";
+    applyTableFont(savedFont);
+}
+
+// =============================================================================
+// About Modal Functions
+// =============================================================================
+
+function openAboutModal() {
+    closeSettingsMenu();
+    const modal = document.getElementById('aboutModal');
+    modal.classList.add('active');
+}
+
+function closeAboutModal() {
+    const modal = document.getElementById('aboutModal');
+    modal.classList.remove('active');
+}
+
+function closeAboutOnOverlay(event) {
+    if (event.target.classList.contains('modal-overlay')) {
+        closeAboutModal();
+    }
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+// Load app configuration (title, logo) from msa.properties
+async function loadAppConfig() {
+    try {
+        const response = await fetch('/app-config');
+        if (response.ok) {
+            const config = await response.json();
+            
+            // Apply title if configured
+            const titleEl = document.getElementById('headerTitle');
+            if (titleEl && config.title && config.title.trim() !== '') {
+                titleEl.textContent = config.title;
+                document.title = config.title;
+            }
+            
+            // Apply logo if configured
+            const logoEl = document.getElementById('headerLogo');
+            if (logoEl && config.logo && config.logo.trim() !== '') {
+                logoEl.src = '/' + config.logo;
+                logoEl.style.display = 'block';
+            }
+            
+            // Apply favicon if configured
+            const faviconEl = document.getElementById('favicon');
+            if (faviconEl && config.favicon && config.favicon.trim() !== '') {
+                faviconEl.href = '/' + config.favicon;
+            }
+            
+            // Apply version in About dialog
+            const versionEl = document.getElementById('aboutVersion');
+            if (versionEl && config.version && config.version.trim() !== '') {
+                versionEl.textContent = 'Version ' + config.version;
+            }
+        }
+    } catch (err) {
+        console.log('Could not load app config:', err);
+        // Silently fail - use default title and no logo/icon
+    }
+}
+
+// Initialize on page load
+window.addEventListener('DOMContentLoaded', () => {
+    // Load app configuration first
+    loadAppConfig();
+    
+    loadStats();
+    loadMessages();
+    
+    // Auto-refresh stats every 30 seconds
+    setInterval(loadStats, 30000);
+    
+    // Load saved font preference
+    loadFontPreference();
+    
+    // Restore active tab from cookie
+    restoreActiveTab();
+    
+    // Wire up event listeners
+    setupEventListeners();
+});
+
+function setupEventListeners() {
+    // Allow Enter key in topic filter - handles Database tab
+    const topicFilter = document.getElementById('topicFilter');
+    if (topicFilter) {
+        topicFilter.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                loadMessages();
+            }
+        });
+    }
+    
+    // Allow Enter key in broker topic filter
+    const brokerFilterInput = document.getElementById('brokerTopicFilter');
+    if (brokerFilterInput) {
+        brokerFilterInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                displayMqttMessages();
+            }
+        });
+    }
+    
+    // Wire Apply button for broker topic filter
+    const applyBtn = document.getElementById('applyFilterBtn');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            displayMqttMessages();
+        });
+    }
+}

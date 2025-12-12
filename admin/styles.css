@@ -1,3 +1,6 @@
+/* Google Fonts - JetBrains Mono and Fira Code */
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 /* Catppuccin Mocha Color Palette */
 :root {
     --ctp-rosewater: #f5e0dc;
@@ -56,6 +59,16 @@ header {
     text-align: center;
     position: relative;
     z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.header-logo {
+    position: absolute;
+    left: 16px;
+    height: 40px;
+    width: auto;
 }
 
 header h1 {
@@ -321,7 +334,7 @@ table {
     background: var(--ctp-mantle);
     border-radius: 2px;
     overflow: hidden;
-    font-family: var(--table-font, 'Courier New', monospace);
+    font-family: var(--table-font, 'JetBrains Mono', monospace);
 }
 
 th, td {
