@@ -43,11 +43,24 @@ function copyToClipboard(text, iconElement) {
     });
 }
 
-// Helper to create copyable cell HTML
+// Maximum display length for topics, payloads, and headers to prevent table overflow
+const MAX_DISPLAY_LENGTH = 80;
+
+// Helper to truncate long values for display while keeping full value for copy
+function truncateForDisplay(value, maxLength = MAX_DISPLAY_LENGTH) {
+    if (value === null || value === undefined) return 'NULL';
+    const str = String(value);
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + '…';
+}
+
+// Helper to create copyable cell HTML with truncation for display
 function makeCopyableCell(className, value) {
-    const displayValue = value !== null && value !== undefined ? value : 'NULL';
-    const escapedValue = String(value || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-    return `<td class="${className} copyable">${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
+    const fullValue = value !== null && value !== undefined ? String(value) : '';
+    const displayValue = value !== null && value !== undefined ? truncateForDisplay(value) : 'NULL';
+    const escapedValue = fullValue.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const titleAttr = fullValue.length > MAX_DISPLAY_LENGTH ? ` title="${escapedValue}"` : '';
+    return `<td class="${className} copyable"${titleAttr}>${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
 }
 
 // Crockford's Base32 alphabet used in ULID
@@ -666,6 +679,17 @@ async function initMqttConnection() {
 
         mqttClient.on('message', (topic, payload, packet) => {
             const timestamp = new Date().toISOString().replace('T', ' ').substr(0, 23);
+            const payloadStr = payload.toString();
+            
+            // Empty payload with retain flag means the retained message is being cleared
+            // Remove the topic from our map and refresh display
+            if (payloadStr.length === 0 && packet.retain === true) {
+                if (mqttMessagesMap.has(topic)) {
+                    mqttMessagesMap.delete(topic);
+                    displayMqttMessages();
+                }
+                return;
+            }
             
             // Extract ULID from MQTT v5 user properties if available
             let ulid = null;
@@ -680,7 +704,7 @@ async function initMqttConnection() {
             const message = {
                 timestamp: timestamp,
                 topic: topic,
-                payload: payload.toString(),
+                payload: payloadStr,
                 retain: packet.retain === true,
                 ulid: ulid
             };

@@ -25,6 +25,7 @@
 
 // Maximum number of exclusion patterns
 #define MAX_EXCLUDE_PATTERNS 64
+#define MAX_EXCLUDE_HEADERS 64
 
 // Batch insert configuration (defaults, can be overridden via config)
 #define DEFAULT_BATCH_SIZE 100           // Flush when queue reaches this size
@@ -63,11 +64,17 @@ static sqlite3_stmt *delete_stmt = NULL;
 static char *exclude_patterns[MAX_EXCLUDE_PATTERNS];
 static int exclude_pattern_count = 0;
 
+// Header exclusion list (user property names to exclude from storage)
+static char *exclude_headers[MAX_EXCLUDE_HEADERS];
+static int exclude_header_count = 0;
+static int headers_disabled = 0;  // Set to 1 if exclude_headers contains '#'
+
 // Message queue entry for batch inserts
 struct msg_entry {
     char ulid[27];
     char *topic;
     char *payload;
+    char *headers;
     int retain;
     int qos;
     struct msg_entry *next;
@@ -181,6 +188,76 @@ static void free_exclude_patterns(void) {
         exclude_patterns[i] = NULL;
     }
     exclude_pattern_count = 0;
+}
+
+// Parse comma-separated header exclusion list
+// Special value '#' disables header storage completely
+static void parse_exclude_headers(const char *headers_str) {
+    if (headers_str == NULL || *headers_str == '\0') {
+        return;
+    }
+    
+    // Check for special '#' value to disable all header storage
+    if (strcmp(headers_str, "#") == 0) {
+        headers_disabled = 1;
+        mosquitto_log_printf(MOSQ_LOG_INFO, "Header storage disabled (exclude_headers=#)");
+        return;
+    }
+    
+    char *headers_copy = strdup(headers_str);
+    if (headers_copy == NULL) {
+        return;
+    }
+    
+    char *token = strtok(headers_copy, ",");
+    while (token != NULL && exclude_header_count < MAX_EXCLUDE_HEADERS) {
+        // Trim leading whitespace
+        while (*token == ' ') token++;
+        // Trim trailing whitespace
+        char *end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') {
+            *end = '\0';
+            end--;
+        }
+        
+        // Check for '#' in the list
+        if (strcmp(token, "#") == 0) {
+            headers_disabled = 1;
+            mosquitto_log_printf(MOSQ_LOG_INFO, "Header storage disabled (exclude_headers contains #)");
+            free(headers_copy);
+            return;
+        }
+        
+        if (*token != '\0') {
+            exclude_headers[exclude_header_count] = strdup(token);
+            if (exclude_headers[exclude_header_count] != NULL) {
+                mosquitto_log_printf(MOSQ_LOG_INFO, "Excluding header: %s", exclude_headers[exclude_header_count]);
+                exclude_header_count++;
+            }
+        }
+        token = strtok(NULL, ",");
+    }
+    
+    free(headers_copy);
+}
+
+// Check if a header name should be excluded
+static int is_header_excluded(const char *header_name) {
+    for (int i = 0; i < exclude_header_count; i++) {
+        if (strcmp(exclude_headers[i], header_name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Free header exclusion list
+static void free_exclude_headers(void) {
+    for (int i = 0; i < exclude_header_count; i++) {
+        free(exclude_headers[i]);
+        exclude_headers[i] = NULL;
+    }
+    exclude_header_count = 0;
 }
 
 // Returns unix epoch microseconds.
@@ -427,7 +504,7 @@ unsigned long long ulid_generate(struct ulid_generator *g, char str[27])
 
 // Enqueue a message for batch insert
 static void enqueue_message(const char *ulid, const char *topic, const char *payload, 
-                           size_t payloadlen, int retain, int qos) {
+                           size_t payloadlen, const char *headers, int retain, int qos) {
     struct msg_entry *entry = malloc(sizeof(struct msg_entry));
     if (entry == NULL) {
         mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to allocate message entry");
@@ -437,6 +514,7 @@ static void enqueue_message(const char *ulid, const char *topic, const char *pay
     memcpy(entry->ulid, ulid, 27);
     entry->topic = strdup(topic);
     entry->payload = strndup(payload, payloadlen);
+    entry->headers = headers ? strdup(headers) : NULL;
     entry->retain = retain;
     entry->qos = qos;
     entry->next = NULL;
@@ -445,6 +523,7 @@ static void enqueue_message(const char *ulid, const char *topic, const char *pay
         mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to allocate message strings");
         free(entry->topic);
         free(entry->payload);
+        free(entry->headers);
         free(entry);
         return;
     }
@@ -508,6 +587,11 @@ static void flush_batch(void) {
         sqlite3_bind_text(insert_stmt, 3, entry->payload, -1, SQLITE_STATIC);
         sqlite3_bind_int(insert_stmt, 4, entry->retain);
         sqlite3_bind_int(insert_stmt, 5, entry->qos);
+        if (entry->headers) {
+            sqlite3_bind_text(insert_stmt, 6, entry->headers, -1, SQLITE_STATIC);
+        } else {
+            sqlite3_bind_null(insert_stmt, 6);
+        }
         
         rc = sqlite3_step(insert_stmt);
         if (rc == SQLITE_DONE) {
@@ -537,6 +621,7 @@ static void flush_batch(void) {
         struct msg_entry *next = entry->next;
         free(entry->topic);
         free(entry->payload);
+        free(entry->headers);
         free(entry);
         entry = next;
     }
@@ -656,6 +741,74 @@ static void *batch_worker(void *arg) {
     return NULL;
 }
 
+// Extract user properties from message and format as semicolon-separated key=value string
+// Excludes headers in the exclude_headers list
+// Returns allocated string or NULL if no headers. Caller must free.
+static char *extract_headers(const mosquitto_property *properties) {
+    // If header storage is completely disabled, return NULL
+    if (headers_disabled) {
+        return NULL;
+    }
+    
+    if (properties == NULL) {
+        return NULL;
+    }
+    
+    // First pass: calculate required buffer size
+    size_t total_len = 0;
+    int header_count = 0;
+    const mosquitto_property *prop = properties;
+    char *prop_name = NULL;
+    char *prop_value = NULL;
+    bool skip_first = false;
+    
+    while ((prop = mosquitto_property_read_string_pair(prop, MQTT_PROP_USER_PROPERTY, 
+                                                       &prop_name, &prop_value, skip_first)) != NULL) {
+        if (prop_name != NULL && prop_value != NULL && !is_header_excluded(prop_name)) {
+            // key=value; format (add 2 for '=' and ';')
+            total_len += strlen(prop_name) + strlen(prop_value) + 2;
+            header_count++;
+        }
+        if (prop_name) { free(prop_name); prop_name = NULL; }
+        if (prop_value) { free(prop_value); prop_value = NULL; }
+        skip_first = true;
+    }
+    
+    if (header_count == 0) {
+        return NULL;
+    }
+    
+    // Allocate buffer (total_len already includes space for separators, just need null terminator)
+    char *headers = malloc(total_len + 1);
+    if (headers == NULL) {
+        return NULL;
+    }
+    headers[0] = '\0';
+    
+    // Second pass: build the header string
+    prop = properties;
+    skip_first = false;
+    int current = 0;
+    
+    while ((prop = mosquitto_property_read_string_pair(prop, MQTT_PROP_USER_PROPERTY, 
+                                                       &prop_name, &prop_value, skip_first)) != NULL) {
+        if (prop_name != NULL && prop_value != NULL && !is_header_excluded(prop_name)) {
+            if (current > 0) {
+                strcat(headers, ";");
+            }
+            strcat(headers, prop_name);
+            strcat(headers, "=");
+            strcat(headers, prop_value);
+            current++;
+        }
+        if (prop_name) { free(prop_name); prop_name = NULL; }
+        if (prop_value) { free(prop_value); prop_value = NULL; }
+        skip_first = true;
+    }
+    
+    return headers;
+}
+
 static int on_message_callback(int event, void *event_data, void *userdata) {
 	struct mosquitto_evt_message *ed = event_data;
 
@@ -739,13 +892,18 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
         return mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "ulid", ulid);
     }
 
+    // Extract headers from message properties (excludes configured headers)
+    char *headers = extract_headers(ed->properties);
+
     // Enqueue message for batch insert (non-blocking)
     if (batch_thread_running) {
-        enqueue_message(ulid, ed->topic, (char *)ed->payload, ed->payloadlen, 
-                       ed->retain ? 1 : 0, ed->qos);
-        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued: topic=%s retain=%d qos=%d", 
-                            ed->topic, ed->retain, ed->qos);
+        enqueue_message(ulid, ed->topic, (char *)ed->payload, ed->payloadlen,
+                        headers, ed->retain ? 1 : 0, ed->qos);
+        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued: topic=%s retain=%d qos=%d headers=%s", 
+                            ed->topic, ed->retain, ed->qos, headers ? headers : "(none)");
     }
+
+    free(headers);
 
     return mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "ulid", ulid);
 }
@@ -791,6 +949,8 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
                     mosquitto_log_printf(MOSQ_LOG_INFO, "Data retention disabled (keeping all messages)");
                 }
             }
+        } else if (strcmp(opts[i].key, "exclude_headers") == 0) {
+            parse_exclude_headers(opts[i].value);
         }
     }
 
@@ -802,7 +962,7 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
         mosquitto_log_printf(MOSQ_LOG_INFO, "Opened database: /mosquitto/data/dbs/default/data");
 
 		char *err_msg = 0;
-		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, retain integer not null default 0, qos integer not null default 0);";
+		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, retain integer not null default 0, qos integer not null default 0, headers text);";
 		rc = sqlite3_exec(msg_db, sql, NULL, 0, &err_msg);
 		if (rc != SQLITE_OK) {
             mosquitto_log_printf(MOSQ_LOG_ERR, "SQL error: %s", err_msg);
@@ -818,7 +978,7 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
                 mosquitto_log_printf(MOSQ_LOG_INFO, "Index on topic column ensured");
             }
             
-    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, retain, qos) values (?1, ?2, ?3, ?4, ?5)", -1, &insert_stmt, 0);
+    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, retain, qos, headers) values (?1, ?2, ?3, ?4, ?5, ?6)", -1, &insert_stmt, 0);
     		if (rc != SQLITE_OK) {
                 mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to prepare insert data statement: %s", sqlite3_errmsg(msg_db));
 			}
@@ -867,6 +1027,7 @@ int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int op
 
     // Free exclusion patterns
     free_exclude_patterns();
+    free_exclude_headers();
 
 	if (insert_stmt != NULL) {
 		sqlite3_finalize(insert_stmt);

@@ -59,12 +59,12 @@ db_get_payload() {
         jq -r '.[0].results.rows[0][0]'
 }
 
-# Query database for message fields (ulid, topic, payload, retain, qos)
+# Query database for message fields (ulid, topic, payload, retain, qos, headers)
 db_get_message() {
     local topic="$1"
     curl -s -X POST "$DB_URL" \
         -H "Content-Type: application/json" \
-        -d "{\"statements\": [\"SELECT ulid, topic, payload, retain, qos FROM msg WHERE topic = '$topic' ORDER BY ulid DESC LIMIT 1\"]}" | \
+        -d "{\"statements\": [\"SELECT ulid, topic, payload, retain, qos, headers FROM msg WHERE topic = '$topic' ORDER BY ulid DESC LIMIT 1\"]}" | \
         jq -r '.[0].results.rows[0] | @json'
 }
 
@@ -686,6 +686,106 @@ else
 fi
 
 # =========================================================================
+# SECTION 10: MQTT User Properties (Headers)
+# =========================================================================
+log_section "Section 10: MQTT User Properties (Headers)"
+
+# -----------------------------------------
+# Test 31: Message with user properties stored as headers
+# -----------------------------------------
+echo ""
+echo "--- Test 31: User properties stored as headers ---"
+TOPIC_HEADERS="data/test/headers_$TEST_ID"
+# mosquitto_pub -D option adds user properties
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
+    -t "$TOPIC_HEADERS" -m '{"test":"headers"}' -q 1 \
+    -D PUBLISH user-property "source" "sensor-1" \
+    -D PUBLISH user-property "priority" "high"
+sleep 0.5
+
+MSG_DATA=$(db_get_message "$TOPIC_HEADERS")
+HEADERS=$(echo "$MSG_DATA" | jq -r '.[5]')
+
+if [ "$HEADERS" != "null" ] && echo "$HEADERS" | grep -q "source=sensor-1" && echo "$HEADERS" | grep -q "priority=high"; then
+    log_pass "User properties stored as headers: $HEADERS"
+else
+    log_fail "Headers not stored correctly, got: $HEADERS"
+fi
+
+# -----------------------------------------
+# Test 32: Message without user properties has null headers
+# -----------------------------------------
+echo ""
+echo "--- Test 32: Message without user properties ---"
+TOPIC_NO_HEADERS="data/test/noheaders_$TEST_ID"
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
+    -t "$TOPIC_NO_HEADERS" -m '{"test":"no headers"}' -q 1
+sleep 0.5
+
+MSG_DATA=$(db_get_message "$TOPIC_NO_HEADERS")
+HEADERS=$(echo "$MSG_DATA" | jq -r '.[5]')
+
+if [ "$HEADERS" = "null" ] || [ -z "$HEADERS" ]; then
+    log_pass "No headers stored for message without user properties"
+else
+    log_fail "Expected null headers, got: $HEADERS"
+fi
+
+# -----------------------------------------
+# Test 33: Excluded headers are not stored
+# -----------------------------------------
+echo ""
+echo "--- Test 33: Excluded headers are not stored ---"
+TOPIC_EXCL_HEADERS="data/test/excl_headers_$TEST_ID"
+# Send message with both included and excluded headers
+# mosquitto.conf has: plugin_opt_exclude_headers header-to-exclude,another-header
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
+    -t "$TOPIC_EXCL_HEADERS" -m '{"test":"excluded headers"}' -q 1 \
+    -D PUBLISH user-property "allowed-header" "value1" \
+    -D PUBLISH user-property "header-to-exclude" "secret" \
+    -D PUBLISH user-property "another-header" "also-secret" \
+    -D PUBLISH user-property "visible" "yes"
+sleep 0.5
+
+MSG_DATA=$(db_get_message "$TOPIC_EXCL_HEADERS")
+HEADERS=$(echo "$MSG_DATA" | jq -r '.[5]')
+
+# Should contain allowed-header and visible, but NOT header-to-exclude or another-header
+if echo "$HEADERS" | grep -q "allowed-header=value1" && \
+   echo "$HEADERS" | grep -q "visible=yes" && \
+   ! echo "$HEADERS" | grep -q "header-to-exclude" && \
+   ! echo "$HEADERS" | grep -q "another-header"; then
+    log_pass "Excluded headers correctly filtered: $HEADERS"
+else
+    log_fail "Header exclusion failed, got: $HEADERS"
+fi
+
+# -----------------------------------------
+# Test 34: Multiple headers with same allowed name
+# -----------------------------------------
+echo ""
+echo "--- Test 34: Multiple headers stored correctly ---"
+TOPIC_MULTI_HEADERS="data/test/multi_headers_$TEST_ID"
+mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
+    -t "$TOPIC_MULTI_HEADERS" -m '{"test":"multi headers"}' -q 1 \
+    -D PUBLISH user-property "tag" "sensor" \
+    -D PUBLISH user-property "tag" "outdoor" \
+    -D PUBLISH user-property "unit" "celsius"
+sleep 0.5
+
+MSG_DATA=$(db_get_message "$TOPIC_MULTI_HEADERS")
+HEADERS=$(echo "$MSG_DATA" | jq -r '.[5]')
+
+# Should contain all three headers (tag appears twice with different values)
+if echo "$HEADERS" | grep -q "tag=sensor" && \
+   echo "$HEADERS" | grep -q "tag=outdoor" && \
+   echo "$HEADERS" | grep -q "unit=celsius"; then
+    log_pass "Multiple headers stored correctly: $HEADERS"
+else
+    log_fail "Multiple headers not stored correctly, got: $HEADERS"
+fi
+
+# =========================================================================
 # Summary
 # =========================================================================
 echo ""
@@ -697,79 +797,12 @@ echo -e "Failed: ${RED}$FAILED${NC}"
 echo "Total:  $((PASSED + FAILED))"
 echo "========================================"
 
-# Cleanup: show last few messages
-log_info "Last 5 messages in database:"
-curl -s -X POST "$DB_URL" \
-    -H "Content-Type: application/json" \
-    -d '{"statements": ["SELECT ulid, topic, payload FROM msg ORDER BY ulid DESC LIMIT 5"]}' | \
-    jq -r '.[0].results.rows[] | "  \(.[1]): \(.[2][0:50])..."'
-
-if [ "$FAILED" -gt 0 ]; then
-    exit 1
-fi
-exit 0
-
-COUNT_AFTER_DELETE=$(db_find_topic "$TOPIC_DELETE_ULID")
-# Check that the second message still exists
-REMAINING_MSG=$(curl -s -X POST "$DB_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"statements\": [\"SELECT payload FROM msg WHERE topic = '$TOPIC_DELETE_ULID' LIMIT 1\"]}" | \
-    jq -r '.[0].results.rows[0][0]')
-
-if [ "$COUNT_AFTER_DELETE" -eq 1 ] && [[ "$REMAINING_MSG" == *"second"* ]]; then
-    log_pass "Targeted delete worked - first message deleted, second remains ($COUNT_BEFORE_DELETE -> $COUNT_AFTER_DELETE)"
-else
-    log_fail "Targeted delete failed - expected 1 message with 'second', got $COUNT_AFTER_DELETE messages, content: $REMAINING_MSG"
-fi
-echo ""
-
-# -----------------------------------------
-# Test 7: Delete without ULID (fallback - deletes most recent)
-# -----------------------------------------
-echo "--- Test 7: Delete without ULID (fallback) ---"
-TOPIC_DELETE_FALLBACK="data/test/delete_fallback_$TEST_ID"
-
-# Publish a retained message
-log_info "Publishing retained message to $TOPIC_DELETE_FALLBACK"
-mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_DELETE_FALLBACK" -m '{"msg":"to_delete"}' -q 1 -r -V 5
-sleep 0.5
-
-COUNT_BEFORE_FALLBACK=$(db_find_topic "$TOPIC_DELETE_FALLBACK")
-log_info "Messages before fallback delete: $COUNT_BEFORE_FALLBACK"
-
-# Delete by sending empty retained (no ULID property - uses fallback)
-log_info "Deleting message using fallback (no ULID property)"
-mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_DELETE_FALLBACK" -r -n -V 5
-sleep 0.5
-
-COUNT_AFTER_FALLBACK=$(db_find_topic "$TOPIC_DELETE_FALLBACK")
-if [ "$COUNT_AFTER_FALLBACK" -eq 0 ]; then
-    log_pass "Fallback delete worked - message deleted ($COUNT_BEFORE_FALLBACK -> $COUNT_AFTER_FALLBACK)"
-else
-    log_fail "Fallback delete failed - expected 0 messages, got $COUNT_AFTER_FALLBACK"
-fi
-echo ""
-
-# -----------------------------------------
-# Test 8: Query recent messages
-# -----------------------------------------
-echo "--- Test 8: Recent messages ---"
-log_info "Last 5 messages in database:"
-curl -s -X POST "$DB_URL" \
-    -H "Content-Type: application/json" \
-    -d '{"statements": ["SELECT ulid, topic, payload FROM msg ORDER BY ulid DESC LIMIT 5"]}' | \
-    jq -r '.[0].results.rows[] | "  \(.[1]): \(.[2])"'
-echo ""
-
-# -----------------------------------------
-# Summary
-# -----------------------------------------
-echo "========================================"
-echo "Test Summary"
-echo "========================================"
-echo -e "Passed: ${GREEN}$PASSED${NC}"
-echo -e "Failed: ${RED}$FAILED${NC}"
-echo "========================================"
+# Show last few messages
+#log_info "Last 5 messages in database:"
+#curl -s -X POST "$DB_URL" \
+#    -H "Content-Type: application/json" \
+#    -d '{"statements": ["SELECT ulid, topic, payload FROM msg ORDER BY ulid DESC LIMIT 5"]}' | \
+#    jq -r '.[0].results.rows[] | "  \(.[1]): \(.[2][0:50])..."'
 
 if [ "$FAILED" -gt 0 ]; then
     exit 1
