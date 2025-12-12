@@ -59,12 +59,12 @@ db_get_payload() {
         jq -r '.[0].results.rows[0][0]'
 }
 
-# Query database for message fields
+# Query database for message fields (ulid, topic, payload, retain, qos)
 db_get_message() {
     local topic="$1"
     curl -s -X POST "$DB_URL" \
         -H "Content-Type: application/json" \
-        -d "{\"statements\": [\"SELECT ulid, topic, payload, timestamp, retain, qos FROM msg WHERE topic = '$topic' ORDER BY ulid DESC LIMIT 1\"]}" | \
+        -d "{\"statements\": [\"SELECT ulid, topic, payload, retain, qos FROM msg WHERE topic = '$topic' ORDER BY ulid DESC LIMIT 1\"]}" | \
         jq -r '.[0].results.rows[0] | @json'
 }
 
@@ -196,7 +196,7 @@ mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS0" -m 
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_QOS0")
-QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[5]')
+QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[4]')
 if [ "$QOS_VAL" = "0" ]; then
     log_pass "QoS 0 correctly stored"
 else
@@ -213,7 +213,7 @@ mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS1" -m 
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_QOS1")
-QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[5]')
+QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[4]')
 if [ "$QOS_VAL" = "1" ]; then
     log_pass "QoS 1 correctly stored"
 else
@@ -230,7 +230,7 @@ mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS2" -m 
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_QOS2")
-QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[5]')
+QOS_VAL=$(echo "$MSG_DATA" | jq -r '.[4]')
 if [ "$QOS_VAL" = "2" ]; then
     log_pass "QoS 2 correctly stored"
 else
@@ -247,7 +247,7 @@ mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_RETAIN" -
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_RETAIN")
-RETAIN_VAL=$(echo "$MSG_DATA" | jq -r '.[4]')
+RETAIN_VAL=$(echo "$MSG_DATA" | jq -r '.[3]')
 if [ "$RETAIN_VAL" = "1" ]; then
     log_pass "Retain flag correctly stored"
 else
@@ -264,7 +264,7 @@ mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_NO_RETAIN
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_NO_RETAIN")
-RETAIN_VAL=$(echo "$MSG_DATA" | jq -r '.[4]')
+RETAIN_VAL=$(echo "$MSG_DATA" | jq -r '.[3]')
 if [ "$RETAIN_VAL" = "0" ]; then
     log_pass "Non-retained flag correctly stored"
 else
@@ -613,37 +613,48 @@ else
 fi
 
 # =========================================================================
-# SECTION 8: Timestamp Validation
+# SECTION 8: ULID Timestamp Validation
 # =========================================================================
-log_section "Section 8: Timestamp Validation"
+log_section "Section 8: ULID Timestamp Validation"
 
 # -----------------------------------------
-# Test 29: Timestamp is recent (within last minute)
+# Test 29: Timestamp from ULID is recent (within last minute)
 # -----------------------------------------
 echo ""
-echo "--- Test 29: Timestamp is recent ---"
+echo "--- Test 29: ULID timestamp is recent ---"
 TOPIC_TS="data/test/timestamp_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_TS" -m '{"ts_test":true}' -q 1
 sleep 0.5
 
 MSG_DATA=$(db_get_message "$TOPIC_TS")
-TIMESTAMP=$(echo "$MSG_DATA" | jq -r '.[3]')
+ULID=$(echo "$MSG_DATA" | jq -r '.[0]')
+
+# Extract timestamp from ULID (first 10 chars encode milliseconds in Crockford Base32)
+# Crockford Base32 alphabet: 0123456789ABCDEFGHJKMNPQRSTVWXYZ
+decode_ulid_timestamp() {
+    local ulid_prefix="${1:0:10}"
+    local alphabet="0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    local timestamp=0
+    
+    for (( i=0; i<10; i++ )); do
+        local char="${ulid_prefix:$i:1}"
+        local value=$(echo "$alphabet" | grep -b -o "$char" | head -1 | cut -d: -f1)
+        timestamp=$((timestamp * 32 + value))
+    done
+    
+    echo $timestamp
+}
+
+ULID_MS=$(decode_ulid_timestamp "$ULID")
+ULID_SEC=$((ULID_MS / 1000))
 CURRENT_TS=$(date +%s)
 
-# Timestamp could be in seconds or milliseconds - detect and normalize
-if [ ${#TIMESTAMP} -gt 12 ]; then
-    # Milliseconds - convert to seconds for comparison
-    TIMESTAMP_SEC=$((TIMESTAMP / 1000))
-else
-    TIMESTAMP_SEC=$TIMESTAMP
-fi
-
-DIFF=$((CURRENT_TS - TIMESTAMP_SEC))
+DIFF=$((CURRENT_TS - ULID_SEC))
 
 if [ "$DIFF" -lt 60 ] && [ "$DIFF" -ge 0 ]; then
-    log_pass "Timestamp is within last minute (diff: ${DIFF}s)"
+    log_pass "ULID timestamp is within last minute (diff: ${DIFF}s)"
 else
-    log_fail "Timestamp is not recent (diff: ${DIFF}s, stored: $TIMESTAMP)"
+    log_fail "ULID timestamp is not recent (diff: ${DIFF}s, ulid: $ULID)"
 fi
 
 # =========================================================================

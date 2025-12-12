@@ -68,7 +68,6 @@ struct msg_entry {
     char ulid[27];
     char *topic;
     char *payload;
-    long int timestamp;
     int retain;
     int qos;
     struct msg_entry *next;
@@ -428,7 +427,7 @@ unsigned long long ulid_generate(struct ulid_generator *g, char str[27])
 
 // Enqueue a message for batch insert
 static void enqueue_message(const char *ulid, const char *topic, const char *payload, 
-                           size_t payloadlen, long int timestamp, int retain, int qos) {
+                           size_t payloadlen, int retain, int qos) {
     struct msg_entry *entry = malloc(sizeof(struct msg_entry));
     if (entry == NULL) {
         mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to allocate message entry");
@@ -438,7 +437,6 @@ static void enqueue_message(const char *ulid, const char *topic, const char *pay
     memcpy(entry->ulid, ulid, 27);
     entry->topic = strdup(topic);
     entry->payload = strndup(payload, payloadlen);
-    entry->timestamp = timestamp;
     entry->retain = retain;
     entry->qos = qos;
     entry->next = NULL;
@@ -508,9 +506,8 @@ static void flush_batch(void) {
         sqlite3_bind_text(insert_stmt, 1, entry->ulid, -1, SQLITE_STATIC);
         sqlite3_bind_text(insert_stmt, 2, entry->topic, -1, SQLITE_STATIC);
         sqlite3_bind_text(insert_stmt, 3, entry->payload, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(insert_stmt, 4, (sqlite3_int64)entry->timestamp);
-        sqlite3_bind_int(insert_stmt, 5, entry->retain);
-        sqlite3_bind_int(insert_stmt, 6, entry->qos);
+        sqlite3_bind_int(insert_stmt, 4, entry->retain);
+        sqlite3_bind_int(insert_stmt, 5, entry->qos);
         
         rc = sqlite3_step(insert_stmt);
         if (rc == SQLITE_DONE) {
@@ -545,8 +542,36 @@ static void flush_batch(void) {
     }
 }
 
+// Generate ULID prefix (first 10 chars) from timestamp in milliseconds
+// Used for time-based queries since ULIDs are lexicographically sortable by time
+static void timestamp_to_ulid_prefix(unsigned long long ts_ms, char prefix[11]) {
+    static const char set[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    
+    // ULID timestamp is stored in first 6 bytes (48 bits), encoded as 10 base32 chars
+    unsigned char bytes[6];
+    bytes[0] = ts_ms >> 40;
+    bytes[1] = ts_ms >> 32;
+    bytes[2] = ts_ms >> 24;
+    bytes[3] = ts_ms >> 16;
+    bytes[4] = ts_ms >> 8;
+    bytes[5] = ts_ms >> 0;
+    
+    // Encode to base32 (same as ulid_encode but only first 10 chars)
+    prefix[0] = set[bytes[0] >> 5];
+    prefix[1] = set[bytes[0] & 0x1f];
+    prefix[2] = set[bytes[1] >> 3];
+    prefix[3] = set[(bytes[1] << 2 | bytes[2] >> 6) & 0x1f];
+    prefix[4] = set[(bytes[2] >> 1) & 0x1f];
+    prefix[5] = set[(bytes[2] << 4 | bytes[3] >> 4) & 0x1f];
+    prefix[6] = set[(bytes[3] << 1 | bytes[4] >> 7) & 0x1f];
+    prefix[7] = set[(bytes[4] >> 2) & 0x1f];
+    prefix[8] = set[(bytes[4] << 3 | bytes[5] >> 5) & 0x1f];
+    prefix[9] = set[bytes[5] & 0x1f];
+    prefix[10] = '\0';
+}
+
 // Delete messages older than retention_days
-// Uses timestamp column for efficient deletion
+// Uses ULID prefix comparison for efficient deletion (ULIDs are lexicographically sortable)
 static void cleanup_old_messages(void) {
     if (retention_days <= 0 || msg_db == NULL) {
         return;
@@ -560,11 +585,15 @@ static void cleanup_old_messages(void) {
     }
     last_retention_check = now;
     
-    // Calculate cutoff timestamp (seconds since epoch)
-    time_t cutoff_timestamp = now - (retention_days * 24 * 60 * 60);
+    // Calculate cutoff timestamp in milliseconds
+    unsigned long long cutoff_ms = ((unsigned long long)now - (retention_days * 24 * 60 * 60)) * 1000ULL;
+    
+    // Generate ULID prefix for cutoff time
+    char cutoff_prefix[11];
+    timestamp_to_ulid_prefix(cutoff_ms, cutoff_prefix);
     
     char sql[256];
-    snprintf(sql, sizeof(sql), "DELETE FROM msg WHERE timestamp < %ld", (long)cutoff_timestamp);
+    snprintf(sql, sizeof(sql), "DELETE FROM msg WHERE ulid < '%s'", cutoff_prefix);
     
     char *err_msg = NULL;
     int rc = sqlite3_exec(msg_db, sql, NULL, NULL, &err_msg);
@@ -634,8 +663,7 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
 	UNUSED(userdata);
 
 	char ulid[27];
-    unsigned long long usEpoch = ulid_generate(&ulid_gen, ulid);
-    long int msEpoch = usEpoch / 1000ULL;
+    ulid_generate(&ulid_gen, ulid);
 
     // Check if topic should be excluded from persistence
     if (is_topic_excluded(ed->topic)) {
@@ -714,7 +742,7 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
     // Enqueue message for batch insert (non-blocking)
     if (batch_thread_running) {
         enqueue_message(ulid, ed->topic, (char *)ed->payload, ed->payloadlen, 
-                       msEpoch, ed->retain ? 1 : 0, ed->qos);
+                       ed->retain ? 1 : 0, ed->qos);
         mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued: topic=%s retain=%d qos=%d", 
                             ed->topic, ed->retain, ed->qos);
     }
@@ -774,7 +802,7 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
         mosquitto_log_printf(MOSQ_LOG_INFO, "Opened database: /mosquitto/data/dbs/default/data");
 
 		char *err_msg = 0;
-		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, timestamp integer not null, retain integer not null default 0, qos integer not null default 0);";
+		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, retain integer not null default 0, qos integer not null default 0);";
 		rc = sqlite3_exec(msg_db, sql, NULL, 0, &err_msg);
 		if (rc != SQLITE_OK) {
             mosquitto_log_printf(MOSQ_LOG_ERR, "SQL error: %s", err_msg);
@@ -790,17 +818,7 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
                 mosquitto_log_printf(MOSQ_LOG_INFO, "Index on topic column ensured");
             }
             
-            // Create index on timestamp for faster retention cleanup
-            const char *idx_ts_sql = "CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON msg(timestamp);";
-            rc = sqlite3_exec(msg_db, idx_ts_sql, NULL, 0, &err_msg);
-            if (rc != SQLITE_OK) {
-                mosquitto_log_printf(MOSQ_LOG_WARNING, "Failed to create timestamp index: %s", err_msg);
-                sqlite3_free(err_msg);
-            } else {
-                mosquitto_log_printf(MOSQ_LOG_INFO, "Index on timestamp column ensured");
-            }
-            
-    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, timestamp, retain, qos) values (?1, ?2, ?3, ?4, ?5, ?6)", -1, &insert_stmt, 0);
+    		rc = sqlite3_prepare_v2(msg_db, "insert into msg (ulid, topic, payload, retain, qos) values (?1, ?2, ?3, ?4, ?5)", -1, &insert_stmt, 0);
     		if (rc != SQLITE_OK) {
                 mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to prepare insert data statement: %s", sqlite3_errmsg(msg_db));
 			}

@@ -50,15 +50,31 @@ function makeCopyableCell(className, value) {
     return `<td class="${className} copyable">${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
 }
 
+// Crockford's Base32 alphabet used in ULID
+const ULID_ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+// Generate ULID prefix (first 10 chars) from timestamp in milliseconds
+// Used for time-based queries since ULIDs are lexicographically sortable
+function timestampToUlidPrefix(timestampMs) {
+    let result = '';
+    let value = timestampMs;
+    
+    // ULID timestamp is 10 base32 characters (50 bits, but we use 48 for the timestamp)
+    // We need to encode the timestamp as 10 base32 characters, most significant first
+    for (let i = 9; i >= 0; i--) {
+        result = ULID_ENCODING[value & 0x1f] + result;
+        value = Math.floor(value / 32);
+    }
+    
+    return result;
+}
+
 // ULID timestamp extraction
 // ULID format: first 10 characters encode timestamp in milliseconds since Unix epoch
 function extractTimestampFromULID(ulid) {
     if (!ulid || ulid.length < 10) {
         return 'Invalid ULID';
     }
-    
-    // Crockford's Base32 alphabet used in ULID
-    const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
     
     try {
         // Extract first 10 characters (timestamp portion)
@@ -68,7 +84,7 @@ function extractTimestampFromULID(ulid) {
         let timestamp = 0;
         for (let i = 0; i < timestampPart.length; i++) {
             const char = timestampPart[i];
-            const value = ENCODING.indexOf(char);
+            const value = ULID_ENCODING.indexOf(char);
             if (value === -1) {
                 return 'Invalid ULID';
             }
@@ -235,18 +251,19 @@ async function loadMessages() {
         }
     }
     
-    // Add time filter (timestamp is in seconds, not milliseconds)
+    // Add time filter using ULID prefix (ULIDs are lexicographically sortable by time)
     if (timeFilter !== 'all') {
         const days = parseInt(timeFilter);
-        const cutoffTimestamp = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
-        whereConditions.push(`timestamp >= ${cutoffTimestamp}`);
+        const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
+        const cutoffPrefix = timestampToUlidPrefix(cutoffMs);
+        whereConditions.push(`ulid >= '${cutoffPrefix}'`);
     }
     
     // Combine WHERE conditions with AND
     if (whereConditions.length > 0) {
         sql += ` WHERE ` + whereConditions.join(' AND ');
     }
-    sql += ` ORDER BY timestamp DESC LIMIT ${limit}`;
+    sql += ` ORDER BY ulid DESC LIMIT ${limit}`;
 
     // Only show loading on first load or manual refresh (not during auto-refresh)
     if (!lastQueryResult) {
