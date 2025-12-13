@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
@@ -69,8 +70,17 @@ static char *exclude_headers[MAX_EXCLUDE_HEADERS];
 static int exclude_header_count = 0;
 static int headers_disabled = 0;  // Set to 1 if exclude_headers contains '#'
 
-// Message queue entry for batch inserts
+// ULID generator mutex for thread safety
+static pthread_mutex_t ulid_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Operation types for queue entries
+#define OP_INSERT 0
+#define OP_DELETE 1
+#define OP_DELETE_FALLBACK 2  // Delete most recent for topic (no specific ULID)
+
+// Message queue entry for batch inserts and deletes
 struct msg_entry {
+    int operation;      // OP_INSERT, OP_DELETE, or OP_DELETE_FALLBACK
     char ulid[27];
     char *topic;
     char *payload;
@@ -87,7 +97,7 @@ static int msg_queue_size = 0;
 static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t batch_thread;
-static volatile int batch_thread_running = 0;
+static atomic_int batch_thread_running = 0;
 
 // Forward declarations
 static void flush_batch(void);
@@ -511,6 +521,7 @@ static void enqueue_message(const char *ulid, const char *topic, const char *pay
         return;
     }
     
+    entry->operation = OP_INSERT;
     memcpy(entry->ulid, ulid, 27);
     entry->topic = strdup(topic);
     entry->payload = strndup(payload, payloadlen);
@@ -547,6 +558,52 @@ static void enqueue_message(const char *ulid, const char *topic, const char *pay
     pthread_mutex_unlock(&queue_mutex);
 }
 
+// Enqueue a delete operation for batch processing
+// If ulid is NULL, will delete the most recent message for the topic
+static void enqueue_delete(const char *topic, const char *ulid) {
+    struct msg_entry *entry = malloc(sizeof(struct msg_entry));
+    if (entry == NULL) {
+        mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to allocate delete entry");
+        return;
+    }
+    
+    if (ulid != NULL) {
+        entry->operation = OP_DELETE;
+        memcpy(entry->ulid, ulid, 27);
+    } else {
+        entry->operation = OP_DELETE_FALLBACK;
+        entry->ulid[0] = '\0';
+    }
+    entry->topic = strdup(topic);
+    entry->payload = NULL;
+    entry->headers = NULL;
+    entry->retain = 0;
+    entry->qos = 0;
+    entry->next = NULL;
+    
+    if (entry->topic == NULL) {
+        mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to allocate delete topic string");
+        free(entry);
+        return;
+    }
+    
+    pthread_mutex_lock(&queue_mutex);
+    
+    // Add to queue
+    if (msg_queue_tail == NULL) {
+        msg_queue_head = msg_queue_tail = entry;
+    } else {
+        msg_queue_tail->next = entry;
+        msg_queue_tail = entry;
+    }
+    msg_queue_size++;
+    
+    // Signal the batch worker immediately for delete operations
+    pthread_cond_signal(&queue_cond);
+    
+    pthread_mutex_unlock(&queue_mutex);
+}
+
 // Flush queued messages to database as a batch
 static void flush_batch(void) {
     struct msg_entry *batch_head = NULL;
@@ -565,42 +622,95 @@ static void flush_batch(void) {
     msg_queue_size = 0;
     pthread_mutex_unlock(&queue_mutex);
     
-    if (batch_count == 0 || msg_db == NULL || insert_stmt == NULL) {
+    if (batch_count == 0 || msg_db == NULL) {
         return;
     }
     
-    // Begin transaction for batch insert
+    // Begin transaction for batch operations
     char *err_msg = NULL;
     int rc = sqlite3_exec(msg_db, "BEGIN TRANSACTION", NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to begin transaction: %s", err_msg);
         sqlite3_free(err_msg);
-        // Fall through and try individual inserts anyway
+        // Fall through and try individual operations anyway
     }
     
-    // Insert all messages in batch
+    // Process all entries in batch
     struct msg_entry *entry = batch_head;
-    int success_count = 0;
+    int insert_count = 0;
+    int delete_count = 0;
     while (entry != NULL) {
-        sqlite3_bind_text(insert_stmt, 1, entry->ulid, -1, SQLITE_STATIC);
-        sqlite3_bind_text(insert_stmt, 2, entry->topic, -1, SQLITE_STATIC);
-        sqlite3_bind_text(insert_stmt, 3, entry->payload, -1, SQLITE_STATIC);
-        sqlite3_bind_int(insert_stmt, 4, entry->retain);
-        sqlite3_bind_int(insert_stmt, 5, entry->qos);
-        if (entry->headers) {
-            sqlite3_bind_text(insert_stmt, 6, entry->headers, -1, SQLITE_STATIC);
-        } else {
-            sqlite3_bind_null(insert_stmt, 6);
+        if (entry->operation == OP_INSERT) {
+            // Insert operation
+            if (insert_stmt != NULL) {
+                sqlite3_bind_text(insert_stmt, 1, entry->ulid, -1, SQLITE_STATIC);
+                sqlite3_bind_text(insert_stmt, 2, entry->topic, -1, SQLITE_STATIC);
+                sqlite3_bind_text(insert_stmt, 3, entry->payload, -1, SQLITE_STATIC);
+                sqlite3_bind_int(insert_stmt, 4, entry->retain);
+                sqlite3_bind_int(insert_stmt, 5, entry->qos);
+                if (entry->headers) {
+                    sqlite3_bind_text(insert_stmt, 6, entry->headers, -1, SQLITE_STATIC);
+                } else {
+                    sqlite3_bind_null(insert_stmt, 6);
+                }
+                
+                rc = sqlite3_step(insert_stmt);
+                if (rc == SQLITE_DONE) {
+                    insert_count++;
+                } else {
+                    mosquitto_log_printf(MOSQ_LOG_ERR, "Batch insert failed for topic %s: %s", 
+                                       entry->topic, sqlite3_errmsg(msg_db));
+                }
+                sqlite3_reset(insert_stmt);
+            }
+        } else if (entry->operation == OP_DELETE) {
+            // Delete with specific ULID
+            if (delete_stmt != NULL) {
+                sqlite3_bind_text(delete_stmt, 1, entry->topic, -1, SQLITE_STATIC);
+                sqlite3_bind_text(delete_stmt, 2, entry->ulid, -1, SQLITE_STATIC);
+                
+                rc = sqlite3_step(delete_stmt);
+                if (rc == SQLITE_DONE) {
+                    int changes = sqlite3_changes(msg_db);
+                    if (changes > 0) {
+                        delete_count++;
+                        mosquitto_log_printf(MOSQ_LOG_INFO, "Deleted message for topic: %s (ulid: %s)", 
+                                            entry->topic, entry->ulid);
+                    }
+                } else {
+                    mosquitto_log_printf(MOSQ_LOG_ERR, "Delete failed for topic %s: %s", 
+                                       entry->topic, sqlite3_errmsg(msg_db));
+                }
+                sqlite3_reset(delete_stmt);
+            }
+        } else if (entry->operation == OP_DELETE_FALLBACK) {
+            // Delete most recent message for topic (fallback when no ULID provided)
+            sqlite3_stmt *find_stmt = NULL;
+            rc = sqlite3_prepare_v2(msg_db,
+                "SELECT ulid FROM msg WHERE topic = ?1 ORDER BY ulid DESC LIMIT 1",
+                -1, &find_stmt, 0);
+            if (rc == SQLITE_OK) {
+                sqlite3_bind_text(find_stmt, 1, entry->topic, -1, SQLITE_STATIC);
+                if (sqlite3_step(find_stmt) == SQLITE_ROW) {
+                    const char *found_ulid = (const char *)sqlite3_column_text(find_stmt, 0);
+                    if (delete_stmt != NULL && found_ulid != NULL) {
+                        sqlite3_bind_text(delete_stmt, 1, entry->topic, -1, SQLITE_STATIC);
+                        sqlite3_bind_text(delete_stmt, 2, found_ulid, -1, SQLITE_TRANSIENT);
+                        
+                        rc = sqlite3_step(delete_stmt);
+                        if (rc == SQLITE_DONE && sqlite3_changes(msg_db) > 0) {
+                            delete_count++;
+                            mosquitto_log_printf(MOSQ_LOG_INFO, "Deleted most recent message for topic: %s (ulid: %s)", 
+                                                entry->topic, found_ulid);
+                        }
+                        sqlite3_reset(delete_stmt);
+                    }
+                } else {
+                    mosquitto_log_printf(MOSQ_LOG_WARNING, "No message found to delete for topic: %s", entry->topic);
+                }
+                sqlite3_finalize(find_stmt);
+            }
         }
-        
-        rc = sqlite3_step(insert_stmt);
-        if (rc == SQLITE_DONE) {
-            success_count++;
-        } else {
-            mosquitto_log_printf(MOSQ_LOG_ERR, "Batch insert failed for topic %s: %s", 
-                               entry->topic, sqlite3_errmsg(msg_db));
-        }
-        sqlite3_reset(insert_stmt);
         
         entry = entry->next;
     }
@@ -612,8 +722,10 @@ static void flush_batch(void) {
         sqlite3_free(err_msg);
     }
     
-    mosquitto_log_printf(MOSQ_LOG_DEBUG, "Batch insert: %d/%d messages committed", 
-                        success_count, batch_count);
+    if (insert_count > 0 || delete_count > 0) {
+        mosquitto_log_printf(MOSQ_LOG_DEBUG, "Batch: %d inserts, %d deletes committed", 
+                            insert_count, delete_count);
+    }
     
     // Free batch entries
     entry = batch_head;
@@ -702,7 +814,7 @@ static void *batch_worker(void *arg) {
     
     mosquitto_log_printf(MOSQ_LOG_INFO, "Batch worker thread started");
     
-    while (batch_thread_running) {
+    while (atomic_load(&batch_thread_running)) {
         pthread_mutex_lock(&queue_mutex);
         
         // Wait for either: queue size threshold or timeout
@@ -714,7 +826,7 @@ static void *batch_worker(void *arg) {
         }
         
         // Wait with timeout - will wake up on signal or timeout
-        while (msg_queue_size < batch_size && batch_thread_running) {
+        while (msg_queue_size < batch_size && atomic_load(&batch_thread_running)) {
             int rc = pthread_cond_timedwait(&queue_cond, &queue_mutex, &timeout);
             if (rc == ETIMEDOUT) {
                 break;  // Timeout - flush whatever we have
@@ -724,12 +836,12 @@ static void *batch_worker(void *arg) {
         pthread_mutex_unlock(&queue_mutex);
         
         // Flush accumulated messages
-        if (batch_thread_running || msg_queue_size > 0) {
+        if (atomic_load(&batch_thread_running) || msg_queue_size > 0) {
             flush_batch();
         }
         
         // Periodically cleanup old messages (if retention is enabled)
-        if (batch_thread_running) {
+        if (atomic_load(&batch_thread_running)) {
             cleanup_old_messages();
         }
     }
@@ -816,7 +928,11 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
 	UNUSED(userdata);
 
 	char ulid[27];
+    
+    // Thread-safe ULID generation
+    pthread_mutex_lock(&ulid_mutex);
     ulid_generate(&ulid_gen, ulid);
+    pthread_mutex_unlock(&ulid_mutex);
 
     // Check if topic should be excluded from persistence
     if (is_topic_excluded(ed->topic)) {
@@ -851,41 +967,17 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
             skip_first = true;
         }
         
-        // If no ULID in properties, fall back to deleting the most recent
-        if (target_ulid == NULL) {
-            // Query for the most recent ULID for this topic
-            sqlite3_stmt *find_stmt = NULL;
-            int rc = sqlite3_prepare_v2(msg_db,
-                "SELECT ulid FROM msg WHERE topic = ?1 ORDER BY ulid DESC LIMIT 1",
-                -1, &find_stmt, 0);
-            if (rc == SQLITE_OK) {
-                sqlite3_bind_text(find_stmt, 1, ed->topic, -1, SQLITE_STATIC);
-                if (sqlite3_step(find_stmt) == SQLITE_ROW) {
-                    target_ulid = strdup((const char *)sqlite3_column_text(find_stmt, 0));
-                    mosquitto_log_printf(MOSQ_LOG_DEBUG, "Fallback: found most recent ULID: %s", target_ulid);
-                }
-                sqlite3_finalize(find_stmt);
-            }
-        }
-        
-        // Perform the delete if we have a target ULID
-        if (target_ulid != NULL && delete_stmt != NULL) {
-            sqlite3_bind_text(delete_stmt, 1, ed->topic, -1, SQLITE_STATIC);
-            sqlite3_bind_text(delete_stmt, 2, target_ulid, -1, SQLITE_STATIC);
-            
-            int rc = sqlite3_step(delete_stmt);
-            if (rc != SQLITE_DONE) {
-                mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to delete message for topic %s, ulid %s: %s", 
-                                    ed->topic, target_ulid, sqlite3_errmsg(msg_db));
+        // Queue the delete operation (thread-safe, processed by batch worker)
+        if (atomic_load(&batch_thread_running)) {
+            if (target_ulid != NULL) {
+                enqueue_delete(ed->topic, target_ulid);
+                mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued delete: topic=%s ulid=%s", ed->topic, target_ulid);
+                free(target_ulid);
             } else {
-                int changes = sqlite3_changes(msg_db);
-                mosquitto_log_printf(MOSQ_LOG_INFO, "Deleted %d message for topic: %s (ulid: %s)", 
-                                    changes, ed->topic, target_ulid);
+                // No ULID provided, queue fallback delete (most recent)
+                enqueue_delete(ed->topic, NULL);
+                mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued fallback delete: topic=%s", ed->topic);
             }
-            sqlite3_reset(delete_stmt);
-            free(target_ulid);
-        } else if (target_ulid == NULL) {
-            mosquitto_log_printf(MOSQ_LOG_WARNING, "No message found to delete for topic: %s", ed->topic);
         }
         
         // Still add ULID property for consistency
@@ -896,7 +988,7 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
     char *headers = extract_headers(ed->properties);
 
     // Enqueue message for batch insert (non-blocking)
-    if (batch_thread_running) {
+    if (atomic_load(&batch_thread_running)) {
         enqueue_message(ulid, ed->topic, (char *)ed->payload, ed->payloadlen,
                         headers, ed->retain ? 1 : 0, ed->qos);
         mosquitto_log_printf(MOSQ_LOG_DEBUG, "Enqueued: topic=%s retain=%d qos=%d headers=%s", 
@@ -999,10 +1091,10 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
     }
 
     // Start batch worker thread
-    batch_thread_running = 1;
+    atomic_store(&batch_thread_running, 1);
     if (pthread_create(&batch_thread, NULL, batch_worker, NULL) != 0) {
         mosquitto_log_printf(MOSQ_LOG_ERR, "Failed to create batch worker thread");
-        batch_thread_running = 0;
+        atomic_store(&batch_thread_running, 0);
     } else {
         mosquitto_log_printf(MOSQ_LOG_INFO, "Batch insert enabled: size=%d, interval=%dms", 
                             batch_size, flush_interval_ms);
@@ -1019,8 +1111,8 @@ int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int op
 	UNUSED(opt_count);
 
     // Stop batch worker thread
-    if (batch_thread_running) {
-        batch_thread_running = 0;
+    if (atomic_load(&batch_thread_running)) {
+        atomic_store(&batch_thread_running, 0);
         pthread_cond_signal(&queue_cond);  // Wake up the thread
         pthread_join(batch_thread, NULL);
     }
