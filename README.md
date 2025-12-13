@@ -93,7 +93,7 @@ plugin_opt_retention_days 0
 
 ### Performance Tuning
 
-The batch insert mechanism significantly improves throughput by reducing HTTP round-trips to the database. Tune the parameters based on your workload:
+The batch insert mechanism significantly improves throughput by reducing database transaction overhead. Tune the parameters based on your workload:
 
 **Lower latency** (for real-time applications):
 ```properties
