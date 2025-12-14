@@ -46,6 +46,23 @@
             </div>
         </header>
 
+        <!-- Confirmation Modal -->
+        <div id="confirmModal" class="modal-overlay" onclick="closeConfirmOnOverlay(event)">
+            <div class="modal-content confirm-modal">
+                <div class="modal-header">
+                    <h2>Confirm Delete</h2>
+                    <button class="modal-close" onclick="closeConfirmModal()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p id="confirmMessage"></p>
+                    <div class="modal-buttons">
+                        <button class="modal-btn modal-btn-cancel" onclick="closeConfirmModal()">Cancel</button>
+                        <button class="modal-btn modal-btn-confirm" onclick="confirmModalAction()">Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- About Modal -->
         <div id="aboutModal" class="modal-overlay" onclick="closeAboutOnOverlay(event)">
             <div class="modal-content about-modal">

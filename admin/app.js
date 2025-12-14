@@ -839,10 +839,14 @@ function deleteRetainedMessage(topic, ulid) {
         return;
     }
     
-    if (!confirm(`Delete retained message for topic:\n${topic}?`)) {
-        return;
-    }
-    
+    // Show confirmation modal
+    showConfirmModal(
+        `Delete retained message from topic:\n${topic}?`,
+        () => executeDeleteRetainedMessage(topic, ulid)
+    );
+}
+
+function executeDeleteRetainedMessage(topic, ulid) {
     // Build publish options with retain flag
     const publishOptions = { 
         retain: true, 
@@ -865,7 +869,7 @@ function deleteRetainedMessage(topic, ulid) {
             console.error('Failed to delete retained message:', err);
             alert('Failed to delete retained message: ' + err.message);
         } else {
-            console.log('Deleted retained message for topic:', topic, ulid ? `(ulid: ${ulid})` : '(no ulid)');
+            console.log('Deleted retained message from topic:', topic, ulid ? `(ulid: ${ulid})` : '(no ulid)');
             // Remove from local map and refresh display
             mqttMessagesMap.delete(topic);
             displayMqttMessages();
@@ -1184,6 +1188,36 @@ function closeAboutModal() {
 function closeAboutOnOverlay(event) {
     if (event.target.classList.contains('modal-overlay')) {
         closeAboutModal();
+    }
+}
+
+// Confirmation Modal Functions
+let confirmModalCallback = null;
+
+function showConfirmModal(message, onConfirm) {
+    confirmModalCallback = onConfirm;
+    const modal = document.getElementById('confirmModal');
+    const messageEl = document.getElementById('confirmMessage');
+    messageEl.textContent = message;
+    modal.classList.add('active');
+}
+
+function closeConfirmModal() {
+    const modal = document.getElementById('confirmModal');
+    modal.classList.remove('active');
+    confirmModalCallback = null;
+}
+
+function confirmModalAction() {
+    if (confirmModalCallback) {
+        confirmModalCallback();
+    }
+    closeConfirmModal();
+}
+
+function closeConfirmOnOverlay(event) {
+    if (event.target.classList.contains('modal-overlay')) {
+        closeConfirmModal();
     }
 }
 

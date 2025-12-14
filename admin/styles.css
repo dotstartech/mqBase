@@ -863,6 +863,51 @@ td.actions {
     padding: 20px;
 }
 
+/* Confirmation Modal */
+.confirm-modal {
+    max-width: 720px;
+}
+
+.confirm-modal .modal-body p {
+    margin: 0 0 20px 0;
+    color: var(--ctp-text);
+    word-break: break-all;
+}
+
+.modal-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.modal-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.modal-btn-cancel {
+    background: var(--ctp-surface1);
+    color: var(--ctp-text);
+}
+
+.modal-btn-cancel:hover {
+    background: var(--ctp-surface2);
+}
+
+.modal-btn-confirm {
+    background: var(--ctp-red);
+    color: var(--ctp-base);
+}
+
+.modal-btn-confirm:hover {
+    background: var(--ctp-maroon);
+}
+
 .about-modal {
     text-align: center;
 }
