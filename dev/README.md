@@ -1,22 +1,13 @@
 # DEV Scripts and Configs
 
-## Build and Deploy Scripts
+## Build, Test and Deploy Scripts
 
-### build.sh
-Builds the Docker image with version tag from `msa.properties`:
 ```bash
+# Builds the Docker image with version tag from msa.properties
 ./dev/build.sh
-```
-
-### deploy.sh
-Deploys the service to Docker Swarm:
-```bash
+# Deploys the service to Docker Swarm
 ./dev/deploy.sh
-```
-
-### test.sh
-Runs integration tests to verify MQTT persistence and topic exclusion:
-```bash
+# Runs integration tests to verify MQTT persistence, topics exclusion, etc.
 ./dev/test.sh
 ```
 
@@ -67,7 +58,7 @@ Runs integration tests to verify MQTT persistence and topic exclusion:
 ```bash
 ./dev/stress-test.sh -n 500 -p 50 --latency
 # or a more realistic use case
-./dev/stress-test.sh -n 18000 -d 30 -p 1000 -r -q 2 -l
+./dev/stress-test.sh -n 60000 -d 10 -p 1000 -r -q 2 -l
 ```
 
 ### Understanding the Output
@@ -111,6 +102,27 @@ Performance:
 - It waits for the database to stabilize (count stops changing) before reporting results
 - Each publisher sends messages to its own topic: `data/test/stress/pub{N}`
 - Environment variables can override defaults: `MQTT_BROKER`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS`, `DB_URL`
+
+### Message Payload Format
+
+Each test message uses a JSON payload with the following structure:
+
+```json
+{"t":"abc123","p":42,"s":7,"ts":1734567890123}
+```
+
+| Field | Description |
+|-------|-------------|
+| `t` | Test ID - unique identifier for this test run (random hex string) |
+| `p` | Publisher ID - identifies which parallel publisher sent the message (0 to N-1) |
+| `s` | Sequence number - message sequence within this publisher (0 to messages/publishers) |
+| `ts` | Timestamp - Unix epoch milliseconds when the message was created |
+
+This structure enables:
+- **Test isolation**: Filter messages by test ID to analyze specific runs
+- **Publisher tracking**: Identify message distribution across parallel publishers  
+- **Sequence verification**: Detect missing or out-of-order messages
+- **Latency measurement**: Compare `ts` with ULID timestamp to calculate end-to-end latency
 
 ---
 

@@ -1,6 +1,3 @@
-// MQTT SQL Admin - JavaScript Application
-// =============================================================================
-
 // =============================================================================
 // Configuration
 // =============================================================================
@@ -172,10 +169,6 @@ function mqttTopicMatches(pattern, topic) {
     return ti === topicLevels.length;
 }
 
-// =============================================================================
-// Cookie Helper Functions
-// =============================================================================
-
 function setCookie(name, value, days) {
     const expires = new Date();
     expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
@@ -226,7 +219,7 @@ async function executeSQL(sql) {
     }
 }
 
-async function loadStats() {
+async function dbConnState() {
     // Show connecting state
     document.getElementById('dbStatusIcon').textContent = '🟡';
     
@@ -1011,13 +1004,8 @@ function updateFontSelect() {
 }
 
 function selectFont(fontFamily) {
-    // Save to cookie
     setCookie('tableFont', fontFamily, 365);
-    
-    // Apply font
     applyTableFont(fontFamily);
-    
-    // Update select value
     updateFontSelect();
 }
 
@@ -1213,11 +1201,11 @@ window.addEventListener('DOMContentLoaded', () => {
     // Load saved filter preferences before loading data
     loadFilterPreferences();
     
-    loadStats();
+    dbConnState();
     loadMessages();
     
-    // Auto-refresh stats every 30 seconds
-    setInterval(loadStats, 30000);
+    // Auto-refresh stats every 3 seconds
+    setInterval(dbConnState, 3000);
     
     // Load saved theme preference
     loadThemePreference();
