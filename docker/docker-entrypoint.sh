@@ -18,18 +18,6 @@ if [ "$user" = '0' ]; then
 	chown -R admin:admin /tmp/nginx_* /var/log/nginx
 	chmod -R 755 /tmp/nginx_* /var/log/nginx
 	
-	# Copy dynsec.json from secrets to a readable location for nginx
-	# If the secret exists, copy it; otherwise ensure the existing config file is readable
-	if [ -f /run/secrets/dynsec.json ]; then
-		cp /run/secrets/dynsec.json /mosquitto/config/dynsec-runtime.json
-		chown admin:admin /mosquitto/config/dynsec-runtime.json
-		chmod 644 /mosquitto/config/dynsec-runtime.json
-	elif [ -f /mosquitto/config/dynsec.json ]; then
-		cp /mosquitto/config/dynsec.json /mosquitto/config/dynsec-runtime.json
-		chown admin:admin /mosquitto/config/dynsec-runtime.json
-		chmod 644 /mosquitto/config/dynsec-runtime.json
-	fi
-	
 	# Parse MQTT credentials from secrets file and create JSON for web client
 	if [ -f /run/secrets/msa.secrets ]; then
 		# Extract MSA_MQTT_USER value (format: username:password)
