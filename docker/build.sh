@@ -71,8 +71,14 @@ if [[ -n "$RELEASE" ]]; then
     echo "  app.js: ${ORIGINAL_SIZE} bytes -> ${MINIFIED_SIZE} bytes (${REDUCTION}% reduction)"
 fi
 
-# Build and tag with version
-docker build $NO_CACHE -t "$IMAGE_NAME:$VERSION" -t "$IMAGE_NAME:latest" -f "$PROJECT_DIR/docker/Dockerfile" "$PROJECT_DIR"
+# Build and tag with version, passing host user UID/GID
+docker build $NO_CACHE \
+    --build-arg UID=$(id -u) \
+    --build-arg GID=$(id -g) \
+    -t "$IMAGE_NAME:$VERSION" \
+    -t "$IMAGE_NAME:latest" \
+    -f "$PROJECT_DIR/docker/Dockerfile" \
+    "$PROJECT_DIR"
 
 # Restore original app.js if we minified it
 if [[ -n "$CLEANUP_MINIFIED" ]]; then
