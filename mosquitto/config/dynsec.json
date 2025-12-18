@@ -17,7 +17,9 @@
 		}, {
 			"username":	"guest",
 			"textname":	"Guest",
-			"roles":	[],
+			"roles":	[{
+					"rolename":	"guest"
+				}],
 			"password":	"xZEeMMj47sb8yxB+CwfxIr2SmjDkfqdoExHObW70A/fXsCXC6TXTb7xz22F96R+lfg+YWwUABwsWQU2lvdnUJg==",
 			"salt":	"ERq+87gGL2tuMAP2",
 			"iterations":	101
@@ -101,11 +103,29 @@
 					"allow":	true
 				}]
 		}, {
+			"rolename":	"guest",
+			"acls":	[{
+					"acltype":	"subscribePattern",
+					"topic":	"data/test/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"data/dev/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
 			"rolename":	"test",
 			"acls":	[{
 					"acltype":	"publishClientSend",
 					"topic":	"+/test/#",
-					"priority":	1,
+					"priority":	0,
 					"allow":	true
 				}, {
 					"acltype":	"subscribePattern",

@@ -276,11 +276,17 @@ async function handleLogin(event) {
         dbConnState();
         loadMessages();
         
-        // Connect MQTT if on Broker tab
+        // Connect MQTT if on Broker or ACL tab
         const activeTab = document.querySelector('.tab-content.active');
-        if (activeTab && activeTab.id === 'broker-tab' && !window.mqttConnected) {
-            initMqttConnection();
-            window.mqttConnected = true;
+        if (activeTab && (activeTab.id === 'broker-tab' || activeTab.id === 'acl-tab')) {
+            if (!window.mqttConnected) {
+                initMqttConnection();
+                window.mqttConnected = true;
+            }
+            // Also reload ACL config if on ACL tab
+            if (activeTab.id === 'acl-tab') {
+                loadBrokerConfig();
+            }
         }
         // Refresh broker display if on that tab
         if (activeTab && activeTab.id === 'broker-tab') {
@@ -713,8 +719,8 @@ function switchTab(tabName) {
         loadBrokerConfig();
     }
 
-    // Auto-connect MQTT if switching to Broker tab (only if logged in)
-    if (tabName === 'broker' && !window.mqttConnected && msaCredentials) {
+    // Auto-connect MQTT if switching to Broker or ACL tab (only if logged in)
+    if ((tabName === 'broker' || tabName === 'acl') && !window.mqttConnected && msaCredentials) {
         setTimeout(() => {
             initMqttConnection();
             window.mqttConnected = true;
@@ -777,6 +783,12 @@ async function loadBrokerConfig() {
         // Store roles globally for client modal
         window.availableRoles = config.roles || [];
         
+        // Ensure MQTT is connected when ACL data loads successfully
+        if (!window.mqttConnected && msaCredentials) {
+            initMqttConnection();
+            window.mqttConnected = true;
+        }
+        
         window.aclDataLoaded = true;
     } catch (error) {
         console.error('Error loading ACL config:', error);
@@ -816,6 +828,7 @@ function displayRoles(roles) {
     
     roles.forEach(role => {
         const acls = role.acls || [];
+        const escapedRolename = role.rolename.replace(/'/g, "\\'");
         
         // Group ACLs by type
         const aclsByType = {};
@@ -835,6 +848,10 @@ function displayRoles(roles) {
         row.innerHTML = `
             <td class="topic">${role.rolename}</td>
             <td>${aclsHtml || '-'}</td>
+            <td class="actions">
+                <button class="action-btn edit-btn" onclick="openEditRoleModal('${escapedRolename}')">Edit</button>
+                <button class="action-btn delete-btn" onclick="confirmDeleteRole('${escapedRolename}')">Delete</button>
+            </td>
         `;
         tbody.appendChild(row);
     });
@@ -844,7 +861,7 @@ function displayDefaultACL(defaultACL) {
     const container = document.getElementById('default-acl');
     const permissions = Object.entries(defaultACL);
     
-    let html = '<div class="default-acl-row">';
+    let html = '';
     permissions.forEach(([key, value], index) => {
         const isAllowed = value;
         html += `
@@ -860,7 +877,6 @@ function displayDefaultACL(defaultACL) {
             ${index < permissions.length - 1 ? '<span class="acl-separator">|</span>' : ''}
         `;
     });
-    html += '</div>';
     container.innerHTML = html;
 }
 
@@ -957,7 +973,7 @@ function populateRolesCheckboxes(selectedRoles) {
     container.innerHTML = roles.map(role => {
         const checked = selectedRoles.includes(role.rolename) ? 'checked' : '';
         return `
-            <label class="checkbox-label">
+            <label class="modal-checkbox-label">
                 <input type="checkbox" name="clientRoles" value="${role.rolename}" ${checked}>
                 <span>${role.rolename}</span>
             </label>
@@ -1110,6 +1126,245 @@ function sendClientCommands(commands, successMessage) {
         } else {
             showMessage(successMessage, 'success');
             closeClientModal();
+            setTimeout(() => loadBrokerConfig(), 500);
+        }
+    });
+}
+
+// =============================================================================
+// Role CRUD Functions
+// =============================================================================
+
+// Temporary storage for ACLs being edited
+let editingRoleAcls = [];
+
+function openCreateRoleModal() {
+    document.getElementById('roleModalTitle').textContent = 'Create Role';
+    document.getElementById('roleEditMode').value = 'create';
+    document.getElementById('roleName').value = '';
+    document.getElementById('roleName').disabled = false;
+    document.getElementById('roleSubmitBtn').textContent = 'Create';
+    
+    editingRoleAcls = [];
+    renderAclsList();
+    document.getElementById('roleModal').classList.add('active');
+}
+
+function openEditRoleModal(rolename) {
+    // Find the role data
+    const roles = window.availableRoles || [];
+    const role = roles.find(r => r.rolename === rolename);
+    
+    if (!role) {
+        showMessage('Role not found', 'error');
+        return;
+    }
+    
+    document.getElementById('roleModalTitle').textContent = 'Edit Role';
+    document.getElementById('roleEditMode').value = rolename;
+    document.getElementById('roleName').value = rolename;
+    document.getElementById('roleName').disabled = true;
+    document.getElementById('roleSubmitBtn').textContent = 'Save';
+    
+    // Copy ACLs for editing
+    editingRoleAcls = (role.acls || []).map(acl => ({
+        acltype: acl.acltype,
+        topic: acl.topic,
+        allow: acl.allow !== false
+    }));
+    renderAclsList();
+    document.getElementById('roleModal').classList.add('active');
+}
+
+function renderAclsList() {
+    const container = document.getElementById('roleAclsList');
+    
+    if (editingRoleAcls.length === 0) {
+        container.innerHTML = '<div class="no-acls">No ACLs defined</div>';
+        return;
+    }
+    
+    container.innerHTML = editingRoleAcls.map((acl, index) => `
+        <div class="acl-edit-item">
+            <span class="acl-edit-type">${acl.acltype}</span>
+            <span class="acl-edit-topic">${acl.topic}</span>
+            <button type="button" class="action-btn delete-btn" onclick="removeAclFromList(${index})">Remove</button>
+        </div>
+    `).join('');
+}
+
+function addAclToList() {
+    const aclType = document.getElementById('newAclType').value;
+    const topic = document.getElementById('newAclTopic').value.trim();
+    
+    if (!topic) {
+        showMessage('Please enter a topic pattern', 'error');
+        return;
+    }
+    
+    // Check for duplicate
+    const exists = editingRoleAcls.some(acl => acl.acltype === aclType && acl.topic === topic);
+    if (exists) {
+        showMessage('This ACL already exists', 'error');
+        return;
+    }
+    
+    editingRoleAcls.push({
+        acltype: aclType,
+        topic: topic,
+        allow: true
+    });
+    
+    document.getElementById('newAclTopic').value = '';
+    renderAclsList();
+}
+
+function removeAclFromList(index) {
+    editingRoleAcls.splice(index, 1);
+    renderAclsList();
+}
+
+function closeRoleModal() {
+    document.getElementById('roleModal').classList.remove('active');
+    editingRoleAcls = [];
+}
+
+function closeRoleModalOnOverlay(event) {
+    if (event.target.id === 'roleModal') {
+        closeRoleModal();
+    }
+}
+
+async function handleRoleSubmit(event) {
+    event.preventDefault();
+    
+    if (!mqttClient || !mqttClient.connected) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
+    
+    const editMode = document.getElementById('roleEditMode').value;
+    const rolename = document.getElementById('roleName').value.trim();
+    
+    if (editMode === 'create') {
+        await createRole(rolename, editingRoleAcls);
+    } else {
+        await updateRole(editMode, editingRoleAcls);
+    }
+}
+
+async function createRole(rolename, acls) {
+    const commands = [];
+    
+    // Create role command
+    commands.push({
+        command: 'createRole',
+        rolename: rolename
+    });
+    
+    // Add ACLs
+    acls.forEach(acl => {
+        commands.push({
+            command: 'addRoleACL',
+            rolename: rolename,
+            acltype: acl.acltype,
+            topic: acl.topic,
+            allow: acl.allow
+        });
+    });
+    
+    sendRoleCommands(commands, `Role '${rolename}' created successfully`);
+}
+
+async function updateRole(rolename, newAcls) {
+    const commands = [];
+    
+    // Get current ACLs
+    const roles = window.availableRoles || [];
+    const role = roles.find(r => r.rolename === rolename);
+    const currentAcls = role ? (role.acls || []) : [];
+    
+    // Find ACLs to remove (in current but not in new)
+    currentAcls.forEach(currentAcl => {
+        const stillExists = newAcls.some(newAcl => 
+            newAcl.acltype === currentAcl.acltype && newAcl.topic === currentAcl.topic
+        );
+        if (!stillExists) {
+            commands.push({
+                command: 'removeRoleACL',
+                rolename: rolename,
+                acltype: currentAcl.acltype,
+                topic: currentAcl.topic
+            });
+        }
+    });
+    
+    // Find ACLs to add (in new but not in current)
+    newAcls.forEach(newAcl => {
+        const alreadyExists = currentAcls.some(currentAcl => 
+            currentAcl.acltype === newAcl.acltype && currentAcl.topic === newAcl.topic
+        );
+        if (!alreadyExists) {
+            commands.push({
+                command: 'addRoleACL',
+                rolename: rolename,
+                acltype: newAcl.acltype,
+                topic: newAcl.topic,
+                allow: newAcl.allow
+            });
+        }
+    });
+    
+    if (commands.length === 0) {
+        showMessage('No changes to save', 'info');
+        closeRoleModal();
+        return;
+    }
+    
+    sendRoleCommands(commands, `Role '${rolename}' updated successfully`);
+}
+
+function confirmDeleteRole(rolename) {
+    showConfirmModal(
+        `Are you sure you want to delete role '${rolename}'?`,
+        () => deleteRole(rolename)
+    );
+}
+
+async function deleteRole(rolename) {
+    if (!mqttClient || !mqttClient.connected) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
+    
+    const command = {
+        commands: [{
+            command: 'deleteRole',
+            rolename: rolename
+        }]
+    };
+    
+    const topic = '$CONTROL/dynamic-security/v1';
+    mqttClient.publish(topic, JSON.stringify(command), { qos: 1 }, (err) => {
+        if (err) {
+            showMessage(`Failed to delete role: ${err.message}`, 'error');
+        } else {
+            showMessage(`Role '${rolename}' deleted successfully`, 'success');
+            setTimeout(() => loadBrokerConfig(), 500);
+        }
+    });
+}
+
+function sendRoleCommands(commands, successMessage) {
+    const topic = '$CONTROL/dynamic-security/v1';
+    const message = JSON.stringify({ commands });
+    
+    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
+        if (err) {
+            showMessage(`Operation failed: ${err.message}`, 'error');
+        } else {
+            showMessage(successMessage, 'success');
+            closeRoleModal();
             setTimeout(() => loadBrokerConfig(), 500);
         }
     });

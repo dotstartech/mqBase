@@ -192,39 +192,39 @@
     <div id="acl-tab" class="tab-content">
         <div class="content">
             <div class="broker-section">
-                <h3>Default ACL Access</h3>
-                <div class="broker-content">
-                    <div id="default-acl"></div>
-                </div>
+                <h3 class="default-acl-header"><span>Default ACL Access</span><span id="default-acl" class="default-acl-controls"></span></h3>
             </div>
-            <div class="broker-section">
-                <h3>Clients <button class="action-btn create-btn" onclick="openCreateClientModal()">Create</button></h3>
-                <div class="broker-content">
-                    <table class="acl-table" id="clients-table">
-                        <thead>
-                            <tr>
-                                <th>Username</th>
-                                <th>Display Name</th>
-                                <th>Roles</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
+            <div class="acl-tables-row">
+                <div class="broker-section acl-table-section">
+                    <h3>Clients <button class="action-btn create-btn" onclick="openCreateClientModal()">Create</button></h3>
+                    <div class="broker-content">
+                        <table class="acl-table" id="clients-table">
+                            <thead>
+                                <tr>
+                                    <th>Username</th>
+                                    <th>Display Name</th>
+                                    <th>Roles</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
-            </div>
-            <div class="broker-section">
-                <h3>Roles & ACLs</h3>
-                <div class="broker-content">
-                    <table class="acl-table" id="roles-table">
-                        <thead>
-                            <tr>
-                                <th>Role Name</th>
-                                <th>ACLs</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
+                <div class="broker-section acl-table-section">
+                    <h3>Roles & ACLs <button class="action-btn create-btn" onclick="openCreateRoleModal()">Create</button></h3>
+                    <div class="broker-content">
+                        <table class="acl-table" id="roles-table">
+                            <thead>
+                                <tr>
+                                    <th>Role Name</th>
+                                    <th>ACLs</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -335,11 +335,50 @@
                 </div>
                 <div class="form-group">
                     <label>Roles</label>
-                    <div id="clientRolesCheckboxes" class="checkbox-group"></div>
+                    <div id="clientRolesCheckboxes" class="modal-checkbox-group"></div>
                 </div>
                 <div class="modal-buttons">
                     <button type="button" class="modal-btn modal-btn-cancel" onclick="closeClientModal()">Cancel</button>
                     <button type="submit" class="modal-btn modal-btn-submit" id="clientSubmitBtn">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Role Modal (Create/Edit) -->
+<div id="roleModal" class="modal-overlay" onclick="closeRoleModalOnOverlay(event)">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="roleModalTitle">Create Role</h2>
+            <button class="modal-close" onclick="closeRoleModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <form id="roleForm" onsubmit="handleRoleSubmit(event)">
+                <input type="hidden" id="roleEditMode" value="create">
+                <div class="form-group">
+                    <label for="roleName">Role Name</label>
+                    <input type="text" id="roleName" required>
+                </div>
+                <div class="form-group">
+                    <label>ACLs</label>
+                    <div id="roleAclsList" class="acls-editor"></div>
+                    <div class="acl-add-row">
+                        <select id="newAclType">
+                            <option value="publishClientSend">publishClientSend</option>
+                            <option value="publishClientReceive">publishClientReceive</option>
+                            <option value="subscribe">subscribe</option>
+                            <option value="unsubscribe">unsubscribe</option>
+                            <option value="subscribePattern">subscribePattern</option>
+                            <option value="unsubscribePattern">unsubscribePattern</option>
+                        </select>
+                        <input type="text" id="newAclTopic" placeholder="Topic pattern (e.g. sensors/#)">
+                        <button type="button" class="action-btn create-btn" onclick="addAclToList()">Add</button>
+                    </div>
+                </div>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-btn modal-btn-cancel" onclick="closeRoleModal()">Cancel</button>
+                    <button type="submit" class="modal-btn modal-btn-submit" id="roleSubmitBtn">Create</button>
                 </div>
             </form>
         </div>

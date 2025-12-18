@@ -509,6 +509,29 @@ td:first-child {
     margin-bottom: 24px;
 }
 
+/* ACL tables horizontal layout */
+.acl-tables-row {
+    display: flex;
+    gap: 24px;
+}
+
+.acl-tables-row .acl-table-section {
+    flex: 1;
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+.acl-tables-row .acl-table-section h3 {
+    margin-bottom: 0;
+    border-radius: 2px 2px 0 0;
+}
+
+.acl-tables-row .acl-table-section .broker-content {
+    padding: 0;
+    border-radius: 0 0 2px 2px;
+    border-top: none;
+}
+
 .broker-section h3 {
     color: var(--ctp-mauve);
     margin-bottom: 12px;
@@ -556,9 +579,7 @@ td:first-child {
 }
 
 .acl-item {
-    padding: 4px 8px;
-    background: var(--ctp-surface0);
-    border-radius: 2px;
+    padding: 4px 0;
     margin: 2px 0;
     font-size: 12px;
 }
@@ -571,12 +592,22 @@ td:first-child {
     color: var(--ctp-red);
 }
 
-/* Default ACL Toggle Styles */
-.default-acl-row {
+/* Default ACL Header Styles */
+.default-acl-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.default-acl-controls {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 12px;
+    font-size: 14px;
+    font-weight: normal;
 }
 
 .acl-permission {
@@ -586,7 +617,8 @@ td:first-child {
 }
 
 .acl-permission-name {
-    font-weight: 500;
+    font-weight: normal;
+    font-size: 14px;
     color: var(--ctp-text);
 }
 
@@ -986,6 +1018,12 @@ td.actions {
     position: relative;
 }
 
+#clientModal .modal-content,
+#roleModal .modal-content {
+    min-width: 560px;
+    max-width: 700px;
+}
+
 .modal-header {
     display: flex;
     justify-content: space-between;
@@ -1151,7 +1189,7 @@ td.actions {
     color: var(--ctp-overlay1);
 }
 
-.checkbox-group {
+.modal-checkbox-group {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
@@ -1162,7 +1200,7 @@ td.actions {
     overflow-y: auto;
 }
 
-.checkbox-label {
+.modal-checkbox-label {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -1174,11 +1212,11 @@ td.actions {
     transition: background 0.2s;
 }
 
-.checkbox-label:hover {
+.modal-checkbox-label:hover {
     background: var(--ctp-surface1);
 }
 
-.checkbox-label input[type="checkbox"] {
+.modal-checkbox-label input[type="checkbox"] {
     width: 16px;
     height: 16px;
     accent-color: var(--ctp-blue);
@@ -1188,6 +1226,81 @@ td.actions {
 .no-roles {
     color: var(--ctp-overlay1);
     font-style: italic;
+}
+
+/* ACL Editor Styles */
+.acls-editor {
+    background: var(--ctp-surface0);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.no-acls {
+    color: var(--ctp-overlay1);
+    font-style: italic;
+    padding: 8px;
+    text-align: center;
+}
+
+.acl-edit-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--ctp-mantle);
+    border-radius: 4px;
+    margin-bottom: 4px;
+}
+
+.acl-edit-item:last-child {
+    margin-bottom: 0;
+}
+
+.acl-edit-type {
+    font-weight: 500;
+    color: var(--ctp-blue);
+    min-width: 140px;
+}
+
+.acl-edit-topic {
+    flex: 1;
+    color: var(--ctp-text);
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+}
+
+.acl-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.acl-add-row select {
+    padding: 6px 8px;
+    background: var(--ctp-surface0);
+    border: 1px solid var(--ctp-surface2);
+    border-radius: 4px;
+    color: var(--ctp-text);
+    font-size: 13px;
+}
+
+.acl-add-row input {
+    flex: 1;
+    padding: 6px 8px;
+    background: var(--ctp-surface0);
+    border: 1px solid var(--ctp-surface2);
+    border-radius: 4px;
+    color: var(--ctp-text);
+    font-size: 13px;
+}
+
+.acl-add-row input:focus,
+.acl-add-row select:focus {
+    outline: none;
+    border-color: var(--ctp-blue);
 }
 
 .login-error {
@@ -1248,7 +1361,7 @@ td.actions {
 }
 
 .about-title {
-    font-size: 20px;
+    font-size: 24px;
     font-weight: 600;
     color: var(--ctp-lavender);
     margin: 0 0 8px 0;
