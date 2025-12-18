@@ -568,6 +568,87 @@ td:first-child {
     color: var(--ctp-red);
 }
 
+/* Default ACL Toggle Styles */
+.default-acl-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.acl-permission {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.acl-permission-name {
+    font-weight: 500;
+    color: var(--ctp-text);
+}
+
+.acl-separator {
+    color: var(--ctp-overlay0);
+    font-weight: 300;
+}
+
+.acl-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.acl-toggle input {
+    display: none;
+}
+
+.acl-toggle-slider {
+    width: 36px;
+    height: 18px;
+    background: var(--ctp-red);
+    border-radius: 9px;
+    position: relative;
+    transition: background 0.2s;
+}
+
+.acl-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    background: var(--ctp-base);
+    border-radius: 50%;
+    top: 2px;
+    left: 2px;
+    transition: transform 0.2s;
+}
+
+.acl-toggle input:checked + .acl-toggle-slider {
+    background: var(--ctp-green);
+}
+
+.acl-toggle input:checked + .acl-toggle-slider::before {
+    transform: translateX(18px);
+}
+
+.acl-toggle .acl-toggle-label.acl-allow {
+    display: none;
+}
+
+.acl-toggle .acl-toggle-label.acl-deny {
+    display: inline;
+}
+
+.acl-toggle input:checked ~ .acl-toggle-label.acl-allow {
+    display: inline;
+}
+
+.acl-toggle input:checked ~ .acl-toggle-label.acl-deny {
+    display: none;
+}
+
 .json-viewer {
     font-family: 'Courier New', monospace;
     font-size: 14px;

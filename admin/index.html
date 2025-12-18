@@ -192,7 +192,13 @@
     <div id="acl-tab" class="tab-content">
         <div class="content">
             <div class="broker-section">
-                <h3>📋 Clients</h3>
+                <h3>Default ACL Access</h3>
+                <div class="broker-content">
+                    <div id="default-acl"></div>
+                </div>
+            </div>
+            <div class="broker-section">
+                <h3>Clients</h3>
                 <div class="broker-content">
                     <table class="acl-table" id="clients-table">
                         <thead>
@@ -207,24 +213,17 @@
                 </div>
             </div>
             <div class="broker-section">
-                <h3>🔐 Roles & ACLs</h3>
+                <h3>Roles & ACLs</h3>
                 <div class="broker-content">
                     <table class="acl-table" id="roles-table">
                         <thead>
                             <tr>
                                 <th>Role Name</th>
-                                <th>ACL Count</th>
                                 <th>ACLs</th>
                             </tr>
                         </thead>
                         <tbody></tbody>
                     </table>
-                </div>
-            </div>
-            <div class="broker-section">
-                <h3>⚙️ Default ACL Access</h3>
-                <div class="broker-content">
-                    <div id="default-acl"></div>
                 </div>
             </div>
         </div>

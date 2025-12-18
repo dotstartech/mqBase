@@ -808,19 +808,15 @@ function displayRoles(roles) {
     
     roles.forEach(role => {
         const acls = role.acls || [];
-        const aclCount = acls.length;
         
         let aclsHtml = '';
         acls.forEach(acl => {
-            const aclClass = acl.allow ? 'acl-allow' : 'acl-deny';
-            const allowText = acl.allow ? '✓' : '✗';
-            aclsHtml += `<div class="acl-item"><span class="${aclClass}">${allowText}</span> ${acl.acltype}: ${acl.topic}</div>`;
+            aclsHtml += `<div class="acl-item">${acl.acltype}: ${acl.topic}</div>`;
         });
         
         const row = document.createElement('tr');
         row.innerHTML = `
             <td class="topic">${role.rolename}</td>
-            <td class="timestamp">${aclCount}</td>
             <td>${aclsHtml || '-'}</td>
         `;
         tbody.appendChild(row);
@@ -829,16 +825,59 @@ function displayRoles(roles) {
 
 function displayDefaultACL(defaultACL) {
     const container = document.getElementById('default-acl');
-    let html = '<table class="broker-table">';
-    html += '<tr><th>Permission</th><th>Allowed</th></tr>';
+    const permissions = Object.entries(defaultACL);
     
-    Object.entries(defaultACL).forEach(([key, value]) => {
-        const valueClass = value ? 'acl-allow' : 'acl-deny';
-        const valueText = value ? '✓ Allowed' : '✗ Denied';
-        html += `<tr><td>${key}</td><td class="${valueClass}">${valueText}</td></tr>`;
+    let html = '<div class="default-acl-row">';
+    permissions.forEach(([key, value], index) => {
+        const isAllowed = value;
+        html += `
+            <div class="acl-permission">
+                <span class="acl-permission-name">${key}</span>
+                <label class="acl-toggle">
+                    <input type="checkbox" ${isAllowed ? 'checked' : ''} onchange="toggleDefaultACL('${key}', this.checked)">
+                    <span class="acl-toggle-slider"></span>
+                    <span class="acl-toggle-label acl-deny">✗ Denied</span>
+                    <span class="acl-toggle-label acl-allow">✓ Allowed</span>
+                </label>
+            </div>
+            ${index < permissions.length - 1 ? '<span class="acl-separator">|</span>' : ''}
+        `;
     });
-    html += '</table>';
+    html += '</div>';
     container.innerHTML = html;
+}
+
+async function toggleDefaultACL(aclType, allowed) {
+    if (!mqttClient || !mqttClient.connected) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        // Revert the toggle
+        loadBrokerConfig();
+        return;
+    }
+    
+    const command = {
+        commands: [{
+            command: 'setDefaultACLAccess',
+            acls: [{
+                acltype: aclType,
+                allow: allowed
+            }]
+        }]
+    };
+    
+    const topic = '$CONTROL/dynamic-security/v1';
+    const message = JSON.stringify(command);
+    
+    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
+        if (err) {
+            showMessage(`Failed to update default ACL: ${err.message}`, 'error');
+            loadBrokerConfig(); // Revert on error
+        } else {
+            showMessage(`Default ACL '${aclType}' set to ${allowed ? 'Allowed' : 'Denied'}`, 'success');
+            // Reload to confirm the change
+            setTimeout(() => loadBrokerConfig(), 500);
+        }
+    });
 }
 
 // =============================================================================
