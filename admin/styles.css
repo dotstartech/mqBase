@@ -220,14 +220,16 @@ label {
 }
 
 input, select, button {
-    padding: 8px 14px;
+    padding: 8px 12px;
     border: 1px solid var(--ctp-surface2);
     border-radius: 2px;
     font-size: 14px;
+    font-weight: 600;
     background: var(--ctp-surface0);
     color: var(--ctp-text);
     box-sizing: border-box;
-    height: 36px;
+    height: 32px;
+    transition: all 0.3s;
 }
 
 input[type="text"] {
@@ -774,19 +776,19 @@ td.actions {
 }
 
 .action-btn {
-    padding: 4px 10px;
+    padding: 8px 12px;
     border: none;
-    border-radius: 3px;
+    border-radius: 2px;
     cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-    transition: opacity 0.2s, background 0.2s;
+    font-size: 14px;
+    font-weight: 600;
+    height: 32px;
+    transition: all 0.3s;
 }
 
 .action-btn.create-btn {
     background: var(--ctp-green);
     color: var(--ctp-base);
-    height: 24px;
 }
 
 .action-btn.create-btn:hover {
@@ -797,8 +799,6 @@ td.actions {
     background: var(--ctp-blue);
     color: var(--ctp-base);
     margin-right: 6px;
-    min-width: 50px;
-    height: 24px;
 }
 
 .action-btn.edit-btn:hover {
@@ -808,15 +808,14 @@ td.actions {
 .action-btn.delete-btn {
     background: var(--ctp-red);
     color: var(--ctp-base);
-    min-width: 50px;
-    height: 24px;
 }
 
 .action-btn.delete-btn:hover {
     background: var(--ctp-maroon);
 }
 
-.delete-btn {
+/* Trash icon button for Broker tab - must not have action-btn class */
+#mqtt-messages-table .delete-btn {
     background: transparent;
     border: none;
     padding: 0;
@@ -832,7 +831,7 @@ td.actions {
     opacity: 0.7;
 }
 
-.delete-btn:hover {
+#mqtt-messages-table .delete-btn:hover {
     opacity: 1;
 }
 
@@ -1092,13 +1091,14 @@ td.actions {
 }
 
 .modal-btn {
-    padding: 8px 16px;
-    border-radius: 6px;
+    padding: 8px 12px;
+    border-radius: 2px;
     border: none;
     cursor: pointer;
     font-size: 14px;
-    font-weight: 500;
-    transition: all 0.2s;
+    font-weight: 600;
+    height: 32px;
+    transition: all 0.3s;
 }
 
 .modal-btn-cancel {
@@ -1176,14 +1176,16 @@ td.actions {
 
 .form-group input {
     width: 100%;
-    padding: 10px 12px;
+    padding: 8px 12px;
     background: var(--ctp-surface0);
     border: 1px solid var(--ctp-surface1);
-    border-radius: 6px;
+    border-radius: 2px;
     color: var(--ctp-text);
     font-size: 14px;
+    font-weight: 600;
+    height: 32px;
     box-sizing: border-box;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    transition: all 0.3s;
 }
 
 .form-group input:focus {
@@ -1295,22 +1297,28 @@ td.actions {
 }
 
 .acl-add-row select {
-    padding: 6px 8px;
+    padding: 8px 12px;
     background: var(--ctp-surface0);
     border: 1px solid var(--ctp-surface2);
-    border-radius: 4px;
+    border-radius: 2px;
     color: var(--ctp-text);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
+    height: 32px;
+    transition: all 0.3s;
 }
 
 .acl-add-row input {
     flex: 1;
-    padding: 6px 8px;
+    padding: 8px 12px;
     background: var(--ctp-surface0);
     border: 1px solid var(--ctp-surface2);
-    border-radius: 4px;
+    border-radius: 2px;
     color: var(--ctp-text);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
+    height: 32px;
+    transition: all 0.3s;
 }
 
 .acl-add-row input:focus,
@@ -1324,7 +1332,7 @@ td.actions {
     padding: 10px 12px;
     background: rgba(243, 139, 168, 0.15);
     border: 1px solid var(--ctp-red);
-    border-radius: 6px;
+    border-radius: 2px;
     color: var(--ctp-red);
     font-size: 13px;
     margin-bottom: 16px;
