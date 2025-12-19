@@ -838,6 +838,15 @@ td.actions {
     background: var(--ctp-surface0);
 }
 
+.icon-btn.create-btn {
+    color: var(--ctp-green);
+    font-weight: bold;
+    font-size: 32px;
+    padding: 0 4px;
+    margin: 0;
+    line-height: 1;
+}
+
 /* Trash icon button for Broker tab - same style as ACL tab icons */
 #mqtt-messages-table .delete-btn {
     background: transparent;
