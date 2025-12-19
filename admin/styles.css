@@ -641,7 +641,8 @@ td:first-child {
 }
 
 .collapsible-row.expanded .acls-content {
-    flex-wrap: wrap;
+    flex-direction: column;
+    flex-wrap: nowrap;
     white-space: normal;
     max-height: none;
 }
