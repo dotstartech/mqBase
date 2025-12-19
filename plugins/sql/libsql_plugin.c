@@ -281,8 +281,7 @@ static void free_exclude_headers(void) {
 }
 
 // Returns unix epoch microseconds.
-static unsigned long long platform_utime(int coarse)
-{
+static unsigned long long platform_utime(int coarse) {
 	// CLOCK_REALTIME_COARSE has a resolution of 1ms, which is sufficient for this purpose. It's also much faster.
 	struct timespec tv[1];
 	clock_gettime(coarse ? CLOCK_REALTIME_COARSE : CLOCK_REALTIME, tv);
@@ -290,13 +289,11 @@ static unsigned long long platform_utime(int coarse)
 }
 
 // Gather entropy from the operating system. Returns 0 on success.
-static int platform_entropy(void *buf, int len)
-{
+static int platform_entropy(void *buf, int len) {
     return syscall(SYS_getrandom, buf, len, 0) != len;
 }
 
-int ulid_generator_init(struct ulid_generator *g, int flags)
-{
+int ulid_generator_init(struct ulid_generator *g, int flags) {
     g->last_ts = 0;
     g->flags = flags;
     g->i = g->j = 0;
@@ -353,8 +350,7 @@ int ulid_generator_init(struct ulid_generator *g, int flags)
     return initstyle;
 }
 
-void ulid_encode(char str[27], const unsigned char ulid[16])
-{
+void ulid_encode(char str[27], const unsigned char ulid[16]) {
     static const char set[256] = {
         0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
         0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
@@ -418,8 +414,7 @@ void ulid_encode(char str[27], const unsigned char ulid[16])
     str[26] = 0;
 }
 
-int ulid_decode(unsigned char ulid[16], const char *s)
-{
+int ulid_decode(unsigned char ulid[16], const char *s) {
     static const signed char v[] = {
           -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,
           -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,
@@ -478,8 +473,7 @@ int ulid_decode(unsigned char ulid[16], const char *s)
     return 0;
 }
 
-unsigned long long ulid_generate(struct ulid_generator *g, char str[27])
-{
+unsigned long long ulid_generate(struct ulid_generator *g, char str[27]) {
     unsigned long long ts = platform_utime(1) / 1000;
 
     if (!(g->flags & ULID_RELAXED) && g->last_ts == ts) {
@@ -1043,8 +1037,7 @@ static int on_message_callback(int event, void *event_data, void *userdata) {
     return mosquitto_property_add_string_pair(&ed->properties, MQTT_PROP_USER_PROPERTY, "ulid", ulid);
 }
 
-int mosquitto_plugin_version(int supported_version_count, const int *supported_versions)
-{
+int mosquitto_plugin_version(int supported_version_count, const int *supported_versions) {
 	int i;
 	for (i=0; i<supported_version_count; i++) {
 		if (supported_versions[i] == 5) {
@@ -1054,8 +1047,7 @@ int mosquitto_plugin_version(int supported_version_count, const int *supported_v
 	return -1;
 }
 
-int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, struct mosquitto_opt *opts, int opt_count)
-{
+int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, struct mosquitto_opt *opts, int opt_count) {
 	UNUSED(user_data);
 
     // Parse plugin options
@@ -1187,8 +1179,7 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
 	return mosquitto_callback_register(mosq_pid, MOSQ_EVT_MESSAGE, on_message_callback, NULL, NULL);
 }
 
-int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int opt_count)
-{
+int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int opt_count) {
 	UNUSED(user_data);
 	UNUSED(opts);
 	UNUSED(opt_count);
