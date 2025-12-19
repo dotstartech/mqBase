@@ -650,8 +650,8 @@ td:first-child {
 /* Roles table column widths */
 #roles-table th:first-child,
 #roles-table td:first-child {
-    width: 120px;
-    min-width: 120px;
+    width: 240px;
+    min-width: 240px;
 }
 
 #roles-table th:last-child,
