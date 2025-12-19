@@ -845,14 +845,25 @@ function displayRoles(roles) {
         });
         
         const row = document.createElement('tr');
+        row.className = 'collapsible-row';
         row.innerHTML = `
             <td class="topic">${role.rolename}</td>
-            <td>${aclsHtml || '-'}</td>
+            <td class="acls-cell">
+                <div class="acls-content">${aclsHtml || '-'}</div>
+            </td>
             <td class="actions">
-                <button class="icon-btn edit-btn" onclick="openEditRoleModal('${escapedRolename}')" title="Edit role">✏️</button>
-                <button class="icon-btn delete-btn" onclick="confirmDeleteRole('${escapedRolename}')" title="Delete role">🗑️</button>
+                <button class="icon-btn edit-btn" onclick="event.stopPropagation(); openEditRoleModal('${escapedRolename}')" title="Edit role">✏️</button>
+                <button class="icon-btn delete-btn" onclick="event.stopPropagation(); confirmDeleteRole('${escapedRolename}')" title="Delete role">🗑️</button>
             </td>
         `;
+        
+        // Add click handler to toggle expansion (only on non-action cells)
+        row.addEventListener('click', (e) => {
+            if (!e.target.closest('.actions')) {
+                row.classList.toggle('expanded');
+            }
+        });
+        
         tbody.appendChild(row);
     });
 }

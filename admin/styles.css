@@ -590,10 +590,69 @@ td:first-child {
     background: var(--ctp-surface0);
 }
 
+/* Roles table column widths */
+#roles-table th:first-child,
+#roles-table td:first-child {
+    width: 120px;
+    min-width: 120px;
+}
+
+#roles-table th:last-child,
+#roles-table td:last-child {
+    width: 80px;
+    min-width: 80px;
+}
+
+#roles-table th:nth-child(2),
+#roles-table td:nth-child(2) {
+    width: auto;
+}
+
 .acl-item {
     padding: 4px 0;
     margin: 2px 0;
     font-size: 12px;
+}
+
+/* Collapsible rows for Roles table */
+.collapsible-row {
+    cursor: pointer;
+}
+
+.collapsible-row .acls-cell {
+    max-width: 0;
+}
+
+.collapsible-row .acls-content {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-height: 1.8em;
+    transition: max-height 0.3s ease;
+}
+
+.collapsible-row .acls-content .acl-item {
+    padding: 0;
+    margin: 0;
+    flex-shrink: 0;
+}
+
+.collapsible-row.expanded .acls-content {
+    flex-wrap: wrap;
+    white-space: normal;
+    max-height: none;
+}
+
+.collapsible-row.expanded .acls-content .acl-item {
+    padding: 4px 0;
+    margin: 2px 0;
+}
+
+.collapsible-row:hover {
+    background: var(--ctp-surface0);
 }
 
 .acl-allow {
