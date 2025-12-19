@@ -52,13 +52,12 @@ function truncateForDisplay(value, maxLength = MAX_DISPLAY_LENGTH) {
     return str.substring(0, maxLength) + '…';
 }
 
-// Helper to create copyable cell HTML with truncation for display
+// Helper to create copyable cell HTML - CSS handles truncation based on cell width
 function makeCopyableCell(className, value) {
     const fullValue = value !== null && value !== undefined ? String(value) : '';
-    const displayValue = value !== null && value !== undefined ? truncateForDisplay(value) : 'NULL';
+    const displayValue = value !== null && value !== undefined ? String(value) : 'NULL';
     const escapedValue = fullValue.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-    const titleAttr = fullValue.length > MAX_DISPLAY_LENGTH ? ` title="${escapedValue}"` : '';
-    return `<td class="${className} copyable"${titleAttr}>${displayValue}<span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
+    return `<td class="${className} copyable" title="${escapedValue}"><span class="cell-text">${displayValue}</span><span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
 }
 
 // Crockford's Base32 alphabet used in ULID

@@ -418,9 +418,66 @@ td:first-child {
     color: var(--ctp-peach);
 }
 
+/* Messages table column widths - Database and Broker tabs */
+#results table,
+#mqtt-messages-table {
+    table-layout: fixed;
+    width: 100%;
+}
+
+#results table th:nth-child(1),
+#results table td:nth-child(1),
+#mqtt-messages-table th:nth-child(1),
+#mqtt-messages-table td:nth-child(1) {
+    width: 240px;
+}
+
+#results table th:nth-child(2),
+#results table td:nth-child(2),
+#mqtt-messages-table th:nth-child(2),
+#mqtt-messages-table td:nth-child(2) {
+    width: 25%;
+}
+
+#results table th:nth-child(3),
+#results table td:nth-child(3),
+#mqtt-messages-table th:nth-child(3),
+#mqtt-messages-table td:nth-child(3) {
+    width: auto;
+}
+
+#results table th:nth-child(4),
+#results table td:nth-child(4),
+#mqtt-messages-table th:nth-child(4),
+#mqtt-messages-table td:nth-child(4) {
+    width: 320px;
+}
+
+#mqtt-messages-table th:nth-child(5),
+#mqtt-messages-table td:nth-child(5) {
+    width: 80px;
+}
+
+#mqtt-messages-table th:nth-child(6),
+#mqtt-messages-table td:nth-child(6) {
+    width: 80px;
+}
+
 /* Copyable cell styling */
 .copyable {
     cursor: default;
+    position: relative;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.copyable .cell-text {
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: calc(100% - 28px);
+    vertical-align: middle;
 }
 
 .copyable .copy-icon {
