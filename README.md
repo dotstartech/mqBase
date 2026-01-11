@@ -6,6 +6,8 @@ mqBase is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) M
  - Message persistency in local libSQL database with remote HTTP access
  - Admin web UI (served by internal Nginx) with database and broker views and ACL editor
 
+![](docs/mqbase-admin.png)
+
 ## Quick Start
 
 ### Option 1: Docker Compose (recommended)
@@ -39,7 +41,7 @@ docker secret create mqbase.secrets mqbase.secrets
 docker stack deploy -c compose.swarm.yml mqbase
 ```
 
-Open [localhost:8080](http://localhost:8080) in your browser.
+Open [localhost:8080](http://localhost:8080) (or [127.0.0.1:8080](http://127.0.0.1:8080)) in your browser.
 
 ## Credentials Configuration
 
@@ -121,8 +123,8 @@ docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t mqbase:latest 
 
 The `mqbase.properties` file contains application configuration:
 ```properties
-version=0.2.0
-title=mqBase
+version=0.9.0
+title=mqBase Admin
 logo=admin/logo.png
 favicon=admin/logo.png
 ```
@@ -130,7 +132,7 @@ favicon=admin/logo.png
 | Property | Description |
 |----------|-------------|
 | `version` | Application version (used by build/deploy scripts) |
-| `title` | Title displayed in the web UI header (default: "mqBase") |
+| `title` | Title displayed in the web UI header (default: "mqBase Admin") |
 | `logo` | Path to logo image displayed in the header (optional, no logo if empty) |
 | `favicon` | Path to favicon displayed in the browser tab (optional, no icon if empty) |
 
