@@ -1026,7 +1026,7 @@ td.actions {
     cursor: pointer;
     padding: 4px 10px 8px 10px;
     border-radius: 2px;
-    transition: background 0.2s, color 0.2s;
+    transition: background 0.2s, color 0.2s, transform 0.2s;
 }
 
 .settings-btn:hover {
@@ -1044,7 +1044,7 @@ td.actions {
     padding: 6px 12px;
     border-radius: 2px;
     margin-right: 8px;
-    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.2s;
 }
 
 .auth-btn:hover {
