@@ -1024,7 +1024,7 @@ td.actions {
     color: var(--ctp-subtext0);
     font-size: 20px;
     cursor: pointer;
-    padding: 6px 10px;
+    padding: 4px 10px 8px 10px;
     border-radius: 2px;
     transition: background 0.2s, color 0.2s;
 }
@@ -1032,6 +1032,7 @@ td.actions {
 .settings-btn:hover {
     background: var(--ctp-surface0);
     color: var(--ctp-text);
+    transform: translateY(-1px);
 }
 
 .auth-btn {
@@ -1050,6 +1051,7 @@ td.actions {
     background: var(--ctp-surface0);
     color: var(--ctp-text);
     border-color: var(--ctp-surface2);
+    transform: translateY(-1px);
 }
 
 .settings-menu {
