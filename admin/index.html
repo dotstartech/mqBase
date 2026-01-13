@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mqBase</title>
+    <title>mqBase Admin</title>
     <link id="favicon" rel="icon" type="image/png" href="">
     <link rel="stylesheet" href="/admin/styles.css">
     <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
@@ -13,7 +13,7 @@
     <div class="container">
         <header>
             <img id="headerLogo" class="header-logo" src="" alt="Logo" style="display: none;">
-            <h1 id="headerTitle">mqBase</h1>
+            <h1 id="headerTitle">mqBase Admin</h1>
             <div class="settings-wrapper">
                 <button id="authButton" class="auth-btn" onclick="handleAuthButtonClick()" title="Login">Login</button>
                 <button class="settings-btn" onclick="toggleSettingsMenu()" title="Settings">☰</button>
@@ -110,7 +110,7 @@
                 <div class="modal-body about-body">
                     <h2 class="about-title">mqBase</h2>
                     <div class="about-info">
-                        <p>A web-based admin interface for MQTT message persistence with libSQL</p>
+                        <p>MQTT, SQL and web admin in one place</p>
                     </div>
                     <div id="aboutVersion" class="about-version"></div>
                     <div class="about-separator"></div>
