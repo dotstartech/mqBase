@@ -1088,11 +1088,14 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
 	} else {
         mosquitto_log_printf(MOSQ_LOG_INFO, "Opened database: /mosquitto/data/dbs/default/data");
 
+        // Set busy timeout to wait for locks (3 seconds)
+        sqlite3_busy_timeout(msg_db, 3000);
+
         // Enable WAL mode for better concurrent read/write performance
         char *err_msg = 0;
         rc = sqlite3_exec(msg_db, "PRAGMA journal_mode=WAL", NULL, 0, &err_msg);
         if (rc != SQLITE_OK) {
-            mosquitto_log_printf(MOSQ_LOG_WARNING, "Failed to enable WAL mode: %s", err_msg);
+            mosquitto_log_printf(MOSQ_LOG_WARNING, "Failed to enable WAL mode: %s (rc=%d)", err_msg, rc);
             sqlite3_free(err_msg);
         } else {
             mosquitto_log_printf(MOSQ_LOG_INFO, "SQLite WAL mode enabled");
@@ -1101,14 +1104,15 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data, s
         // Set synchronous=NORMAL for better performance (safe with WAL)
         rc = sqlite3_exec(msg_db, "PRAGMA synchronous=NORMAL", NULL, 0, &err_msg);
         if (rc != SQLITE_OK) {
-            mosquitto_log_printf(MOSQ_LOG_WARNING, "Failed to set synchronous=NORMAL: %s", err_msg);
+            mosquitto_log_printf(MOSQ_LOG_WARNING, "Failed to set synchronous=NORMAL: %s (rc=%d)", err_msg, rc);
             sqlite3_free(err_msg);
         }
 
 		const char *sql = "create table if not exists msg(ulid text primary key, topic text not null, payload text not null, retain integer not null default 0, qos integer not null default 0, headers text);";
+        err_msg = NULL;
 		rc = sqlite3_exec(msg_db, sql, NULL, 0, &err_msg);
 		if (rc != SQLITE_OK) {
-            mosquitto_log_printf(MOSQ_LOG_ERR, "SQL error: %s", err_msg);
+            mosquitto_log_printf(MOSQ_LOG_ERR, "SQL error creating table (rc=%d): %s", rc, err_msg ? err_msg : "unknown");
 			sqlite3_free(err_msg);
 		} else {
             // Create index on topic for faster topic-based queries

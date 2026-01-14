@@ -1,15 +1,21 @@
 #!/bin/bash
 # Build Docker image for mqbase
 # Tags the image with both the version from mqbase.properties and 'latest'
-# Usage: ./build.sh [--no-cache] [--release]
-#   --no-cache  Build without using Docker cache
-#   --release   Minify app.js for production build
+# Usage: ./build.sh [--no-cache] [--release] [--distroless]
+#   --no-cache    Build without using Docker cache
+#   --release     Minify app.js for production build
+#   --distroless  Build using distroless base image (tagged as X.X.X-distroless)
 
 set -e
+
+# Registry configuration
+DOCKERHUB_REPO="dotstartech/mqbase"
+GHCR_REPO="ghcr.io/dotstartech/mqbase"
 
 # Parse arguments
 NO_CACHE=""
 RELEASE=""
+DISTROLESS=""
 for arg in "$@"; do
     case $arg in
         --no-cache)
@@ -17,6 +23,9 @@ for arg in "$@"; do
             ;;
         --release)
             RELEASE="1"
+            ;;
+        --distroless)
+            DISTROLESS="1"
             ;;
     esac
 done
@@ -71,13 +80,29 @@ if [[ -n "$RELEASE" ]]; then
     echo "  app.js: ${ORIGINAL_SIZE} bytes -> ${MINIFIED_SIZE} bytes (${REDUCTION}% reduction)"
 fi
 
+# Determine Dockerfile and version suffix
+if [[ -n "$DISTROLESS" ]]; then
+    DOCKERFILE="$PROJECT_DIR/docker/Dockerfile.distroless"
+    VERSION_TAG="${VERSION}-distroless"
+    LATEST_TAG="latest-distroless"
+    echo "  (distroless build)"
+else
+    DOCKERFILE="$PROJECT_DIR/docker/Dockerfile"
+    VERSION_TAG="$VERSION"
+    LATEST_TAG="latest"
+fi
+
 # Build and tag with version, passing host user UID/GID
 docker build $NO_CACHE \
     --build-arg UID=$(id -u) \
     --build-arg GID=$(id -g) \
-    -t "$IMAGE_NAME:$VERSION" \
-    -t "$IMAGE_NAME:latest" \
-    -f "$PROJECT_DIR/docker/Dockerfile" \
+    -t "$IMAGE_NAME:$VERSION_TAG" \
+    -t "$IMAGE_NAME:$LATEST_TAG" \
+    -t "$DOCKERHUB_REPO:$VERSION_TAG" \
+    -t "$DOCKERHUB_REPO:$LATEST_TAG" \
+    -t "$GHCR_REPO:$VERSION_TAG" \
+    -t "$GHCR_REPO:$LATEST_TAG" \
+    -f "$DOCKERFILE" \
     "$PROJECT_DIR"
 
 # Restore original app.js if we minified it
@@ -87,8 +112,12 @@ fi
 
 echo ""
 echo "Successfully built:"
-echo "  - $IMAGE_NAME:$VERSION"
-echo "  - $IMAGE_NAME:latest"
+echo "  - $IMAGE_NAME:$VERSION_TAG"
+echo "  - $IMAGE_NAME:$LATEST_TAG"
+echo "  - $DOCKERHUB_REPO:$VERSION_TAG"
+echo "  - $DOCKERHUB_REPO:$LATEST_TAG"
+echo "  - $GHCR_REPO:$VERSION_TAG"
+echo "  - $GHCR_REPO:$LATEST_TAG"
 if [[ -n "$RELEASE" ]]; then
     echo "  (release build with minified app.js)"
 fi

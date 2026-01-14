@@ -89,6 +89,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx-light \
         curl \
     && rm -rf /var/lib/apt/lists/* \
+    # Remove package manager and unnecessary files to reduce image size
+    && rm -rf \
+        /var/lib/dpkg \
+        /var/lib/apt \
+        /var/cache/apt \
+        /var/log/dpkg.log \
+        /var/log/apt \
+        /usr/share/doc \
+        /usr/share/man \
+        /usr/share/info \
+        /usr/share/lintian \
+        /usr/share/linda \
+        /usr/share/locale/* \
     && groupadd --gid ${GID} admin \
     && useradd --gid ${GID} --uid ${UID} --no-create-home --shell /sbin/nologin admin \
     && mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/admin \
@@ -105,6 +118,7 @@ COPY --from=builder /build/su-exec /usr/local/bin/su-exec
 
 # Copy configuration and scripts
 COPY mosquitto/config/mosquitto.conf /mosquitto/config/mosquitto.conf
+COPY mosquitto/config/dynsec.json /mosquitto/config/dynsec.json
 COPY libsql/libsql.conf /mosquitto/config/libsql.conf
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
 COPY docker/run.sh /mosquitto/run.sh

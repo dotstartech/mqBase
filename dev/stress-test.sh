@@ -10,7 +10,9 @@ BROKER="${MQTT_BROKER:-127.0.0.1}"
 PORT="${MQTT_PORT:-1883}"
 USER="${MQTT_USER:-test}"
 PASS="${MQTT_PASS:-test}"
-DB_URL="${DB_URL:-http://127.0.0.1:8000}"
+DB_URL="${DB_URL:-http://127.0.0.1:8080/db-admin}"
+DB_USER="${DB_USER:-admin}"
+DB_PASS="${DB_PASS:-admin}"
 
 # Default test parameters
 TOTAL_MESSAGES=1000
@@ -105,10 +107,10 @@ log_error() { echo -e "${RED}✗${NC} $1"; }
 
 # Query database and return count
 db_count() {
-    curl -s -X POST "$DB_URL/v1/execute" \
+    curl -s -u "$DB_USER:$DB_PASS" -X POST "$DB_URL/" \
         -H "Content-Type: application/json" \
-        -d '{"stmt": ["SELECT COUNT(*) FROM msg"]}' | \
-        jq -r '.result.rows[0][0].value' 2>/dev/null || echo "0"
+        -d '{"statements": ["SELECT COUNT(*) FROM msg"]}' | \
+        jq -r '.[0].results.rows[0][0]' 2>/dev/null || echo "0"
 }
 
 # ULID Crockford Base32 decoding table
@@ -147,17 +149,17 @@ calculate_latency() {
     
     # Query messages with their ULIDs and payloads
     local query="SELECT ulid, payload FROM msg WHERE payload LIKE '%$test_id%' LIMIT 1000"
-    local result=$(curl -s -X POST "$DB_URL/v1/execute" \
+    local result=$(curl -s -u "$DB_USER:$DB_PASS" -X POST "$DB_URL/" \
         -H "Content-Type: application/json" \
-        -d "{\"stmt\": [\"$query\"]}")
+        -d "{\"statements\": [\"$query\"]}")
     
     # Extract latencies
     local latencies=()
     local count=0
     
     while IFS= read -r line; do
-        local ulid=$(echo "$line" | jq -r '.[0].value' 2>/dev/null)
-        local payload=$(echo "$line" | jq -r '.[1].value' 2>/dev/null)
+        local ulid=$(echo "$line" | jq -r '.[0]' 2>/dev/null)
+        local payload=$(echo "$line" | jq -r '.[1]' 2>/dev/null)
         
         if [ -n "$ulid" ] && [ "$ulid" != "null" ]; then
             # Extract send timestamp from payload
@@ -172,7 +174,7 @@ calculate_latency() {
                 fi
             fi
         fi
-    done < <(echo "$result" | jq -c '.result.rows[]' 2>/dev/null)
+    done < <(echo "$result" | jq -c '.[0].results.rows[]' 2>/dev/null)
     
     if [ $count -eq 0 ]; then
         log_warn "Could not calculate latency (no valid samples)"
@@ -386,19 +388,19 @@ fi
 # Query recent messages to verify (if requested)
 if [ "$SHOW_SAMPLES" = true ]; then
     log_info "Sample of stored messages:"
-    curl -s -X POST "$DB_URL/v1/execute" \
+    curl -s -u "$DB_USER:$DB_PASS" -X POST "$DB_URL/" \
         -H "Content-Type: application/json" \
-        -d "{\"stmt\": [\"SELECT topic, payload FROM msg WHERE payload LIKE '%$TEST_ID%' ORDER BY ulid DESC LIMIT 5\"]}" | \
-        jq -r '.result.rows[] | "  \(.[0].value): \(.[1].value)"' 2>/dev/null || echo "  (unable to fetch)"
+        -d "{\"statements\": [\"SELECT topic, payload FROM msg WHERE payload LIKE '%$TEST_ID%' ORDER BY ulid DESC LIMIT 5\"]}" | \
+        jq -r '.[0].results.rows[] | "  \(.[0]): \(.[1])"' 2>/dev/null || echo "  (unable to fetch)"
     echo ""
 fi
 
 # Check for any database errors
 log_info "Checking database health..."
-DB_SIZE=$(curl -s -X POST "$DB_URL/v1/execute" \
+DB_SIZE=$(curl -s -u "$DB_USER:$DB_PASS" -X POST "$DB_URL/" \
     -H "Content-Type: application/json" \
-    -d '{"stmt": ["SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"]}' | \
-    jq -r '.result.rows[0][0].value' 2>/dev/null || echo "0")
+    -d '{"statements": ["SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"]}' | \
+    jq -r '.[0].results.rows[0][0]' 2>/dev/null || echo "0")
 
 if [ "$DB_SIZE" != "0" ] && [ "$DB_SIZE" != "null" ]; then
     DB_SIZE_MB=$(echo "scale=2; $DB_SIZE / 1048576" | bc)
