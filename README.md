@@ -1,5 +1,10 @@
 # mqBase - MQTT, SQL and web admin in one place
 
+[![Docker Image](https://img.shields.io/docker/v/dotstartech/mqbase?label=Docker&logo=docker)](https://hub.docker.com/r/dotstartech/mqbase)
+[![Docker Pulls](https://img.shields.io/docker/pulls/dotstartech/mqbase?logo=docker)](https://hub.docker.com/r/dotstartech/mqbase)
+[![Docker Image Size](https://img.shields.io/docker/image-size/dotstartech/mqbase?logo=docker)](https://hub.docker.com/r/dotstartech/mqbase)
+[![License](https://img.shields.io/github/license/dotstartech/mqBase)](LICENSE)
+
 mqBase is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) MQTT broker, [libSQL](https://github.com/tursodatabase/libsql) database and [Nginx](https://github.com/nginx/nginx) web server. It features:
  - MQTT v5.0 protocol (plain MQTT, over TLS or WebSocket)
  - Authentication and authorization based on Access Control List (ACL)
