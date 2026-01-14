@@ -13,9 +13,18 @@ mqBase is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) M
 
 ![](docs/mqbase-admin.png)
 
+## Building
+
+```bash
+docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t mqbase:latest -f ./docker/Dockerfile .
+
+# Or use the build script
+./docker/build.sh
+```
+
 ## Quick Start
 
-### Option 1: Docker Compose (recommended)
+### Option 1: Docker Compose
 
 ```bash
 # Build and run with default credentials (admin:admin)
@@ -25,7 +34,7 @@ docker compose up -d
 MQBASE_USER=myuser:mypass MQBASE_MQTT_USER=mqtt:mqttpass docker compose up -d
 ```
 
-### Option 2: Docker Run (single command)
+### Option 2: Docker Run
 
 ```bash
 # With auto-generated credentials (check logs for passwords)
@@ -39,7 +48,7 @@ docker run -d --name mqbase \
   mqbase:latest
 ```
 
-### Option 3: Docker Swarm (production)
+### Option 3: Docker Swarm
 
 ```bash
 docker secret create mqbase.secrets mqbase.secrets
@@ -111,17 +120,6 @@ docker logs mqbase
 #   Username: admin
 #   Password: xK7mN2pQ9rT4wY6z
 # ==============================================
-```
-
-## Building
-
-To build the Docker image:
-
-```bash
-docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t mqbase:latest -f ./docker/Dockerfile .
-
-# Or use the build script
-./docker/build.sh
 ```
 
 ## Application Configuration
