@@ -8,10 +8,6 @@
 
 set -e
 
-# Registry configuration
-DOCKERHUB_REPO="dotstartech/mqbase"
-GHCR_REPO="ghcr.io/dotstartech/mqbase"
-
 # Parse arguments
 NO_CACHE=""
 RELEASE=""
@@ -98,10 +94,6 @@ docker build $NO_CACHE \
     --build-arg GID=$(id -g) \
     -t "$IMAGE_NAME:$VERSION_TAG" \
     -t "$IMAGE_NAME:$LATEST_TAG" \
-    -t "$DOCKERHUB_REPO:$VERSION_TAG" \
-    -t "$DOCKERHUB_REPO:$LATEST_TAG" \
-    -t "$GHCR_REPO:$VERSION_TAG" \
-    -t "$GHCR_REPO:$LATEST_TAG" \
     -f "$DOCKERFILE" \
     "$PROJECT_DIR"
 
@@ -114,10 +106,6 @@ echo ""
 echo "Successfully built:"
 echo "  - $IMAGE_NAME:$VERSION_TAG"
 echo "  - $IMAGE_NAME:$LATEST_TAG"
-echo "  - $DOCKERHUB_REPO:$VERSION_TAG"
-echo "  - $DOCKERHUB_REPO:$LATEST_TAG"
-echo "  - $GHCR_REPO:$VERSION_TAG"
-echo "  - $GHCR_REPO:$LATEST_TAG"
 if [[ -n "$RELEASE" ]]; then
     echo "  (release build with minified app.js)"
 fi
