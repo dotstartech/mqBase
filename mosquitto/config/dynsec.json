@@ -24,26 +24,6 @@
 			"salt":	"ERq+87gGL2tuMAP2",
 			"iterations":	101
 		}, {
-			"username":	"manager",
-			"textname":	"Project manager",
-			"roles":	[{
-					"rolename":	"test"
-				}],
-			"password":	"wXG2roqePkKvwKY5wFsLIdK8Zgmgf66qVw5RMs4TZyTozDIzHTca7rzymaopyqAYvOFa2ulkSWuS4L4HYQbLhg==",
-			"salt":	"ODsIGpGLy0QFHxQr",
-			"iterations":	101
-		}, {
-			"username":	"supervisor",
-			"textname":	"Supervisor",
-			"roles":	[{
-					"rolename":	"admin"
-				}, {
-					"rolename":	"test"
-				}],
-			"password":	"5s9nXlekYlWjRmuzAAcuQPnrsGcuh5hCflbiVgdZYdPFW0U4VbAGTgsJx27l2hWqKVlZGhNMIilijrX1ys8jZQ==",
-			"salt":	"dD0jjQBExnfTT3a/",
-			"iterations":	101
-		}, {
 			"username":	"test",
 			"textname":	"Test user",
 			"roles":	[{
