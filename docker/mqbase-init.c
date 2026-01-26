@@ -88,23 +88,94 @@ int write_file(const char *path, const char *content) {
     return 0;
 }
 
+#define SECRETS_FILE "/mosquitto/config/secrets.conf"
+
+/* Static storage for credentials loaded from file */
+static char file_mqtt_cred[256] = "";
+static char file_http_cred[256] = "";
+
+/* Load credentials from mounted secrets file
+ * Format: MQBASE_USER=username:password
+ *         MQBASE_MQTT_USER=username:password
+ * Returns 1 if file was found and parsed, 0 otherwise
+ */
+int load_secrets_file(void) {
+    FILE *f = fopen(SECRETS_FILE, "r");
+    if (!f) return 0;
+    
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        /* Remove trailing newline/carriage return */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
+            line[--len] = '\0';
+        }
+        
+        /* Skip empty lines and comments */
+        if (len == 0 || line[0] == '#') continue;
+        
+        /* Parse MQBASE_USER= */
+        if (strncmp(line, "MQBASE_USER=", 12) == 0) {
+            strncpy(file_http_cred, line + 12, sizeof(file_http_cred) - 1);
+            file_http_cred[sizeof(file_http_cred) - 1] = '\0';
+        }
+        /* Parse MQBASE_MQTT_USER= */
+        else if (strncmp(line, "MQBASE_MQTT_USER=", 17) == 0) {
+            strncpy(file_mqtt_cred, line + 17, sizeof(file_mqtt_cred) - 1);
+            file_mqtt_cred[sizeof(file_mqtt_cred) - 1] = '\0';
+        }
+    }
+    fclose(f);
+    return 1;
+}
+
 /* Setup credentials and config files */
 int setup_credentials(void) {
     char mqtt_user[64] = "admin";
-    char mqtt_pass[32] = "";
+    char mqtt_pass[256] = "";
     char http_user[64] = "admin";
-    char http_pass[32] = "";
+    char http_pass[256] = "";
+    int mqtt_from_env = 0, http_from_env = 0;
+    int mqtt_from_file = 0, http_from_file = 0;
     
+    /* First check environment variables (highest priority) */
     const char *mqtt_cred = getenv("MQBASE_MQTT_USER");
     const char *http_cred = getenv("MQBASE_USER");
     
+    /* If env vars not set, try loading from mounted secrets file */
+    int secrets_loaded = 0;
+    if (!mqtt_cred || !http_cred) {
+        secrets_loaded = load_secrets_file();
+    }
+    
+    /* Use env var if set, otherwise fall back to file */
+    if (!mqtt_cred && secrets_loaded && file_mqtt_cred[0]) {
+        mqtt_cred = file_mqtt_cred;
+        mqtt_from_file = 1;
+    } else if (mqtt_cred) {
+        mqtt_from_env = 1;
+    }
+    
+    if (!http_cred && secrets_loaded && file_http_cred[0]) {
+        http_cred = file_http_cred;
+        http_from_file = 1;
+    } else if (http_cred) {
+        http_from_env = 1;
+    }
+    
     /* Parse MQTT credentials (format: username:password) */
     if (mqtt_cred && strchr(mqtt_cred, ':')) {
-        strncpy(mqtt_user, mqtt_cred, sizeof(mqtt_user) - 1);
-        char *sep = strchr(mqtt_user, ':');
+        char mqtt_buf[256];
+        strncpy(mqtt_buf, mqtt_cred, sizeof(mqtt_buf) - 1);
+        mqtt_buf[sizeof(mqtt_buf) - 1] = '\0';
+        char *sep = strchr(mqtt_buf, ':');
         if (sep) {
             *sep = '\0';
+            strncpy(mqtt_user, mqtt_buf, sizeof(mqtt_user) - 1);
             strncpy(mqtt_pass, sep + 1, sizeof(mqtt_pass) - 1);
+        }
+        if (mqtt_from_file) {
+            fprintf(stderr, "MQBASE_MQTT_USER: loaded from mounted config (%s)\n", SECRETS_FILE);
         }
     } else {
         generate_password(mqtt_pass, 17);
@@ -118,11 +189,17 @@ int setup_credentials(void) {
     
     /* Parse HTTP credentials */
     if (http_cred && strchr(http_cred, ':')) {
-        strncpy(http_user, http_cred, sizeof(http_user) - 1);
-        char *sep = strchr(http_user, ':');
+        char http_buf[256];
+        strncpy(http_buf, http_cred, sizeof(http_buf) - 1);
+        http_buf[sizeof(http_buf) - 1] = '\0';
+        char *sep = strchr(http_buf, ':');
         if (sep) {
             *sep = '\0';
+            strncpy(http_user, http_buf, sizeof(http_user) - 1);
             strncpy(http_pass, sep + 1, sizeof(http_pass) - 1);
+        }
+        if (http_from_file) {
+            fprintf(stderr, "MQBASE_USER: loaded from mounted config (%s)\n", SECRETS_FILE);
         }
     } else {
         generate_password(http_pass, 17);
@@ -221,21 +298,20 @@ int main(int argc, char *argv[]) {
     mkdir("/tmp/nginx_client_body", 0777);
     mkdir("/tmp/nginx_proxy", 0777);
     mkdir("/mosquitto/data", 0777);
+    chmod("/mosquitto/data", 0777);  /* Ensure writable even if already exists */
     mkdir("/mosquitto/data/dbs", 0777);
     mkdir("/mosquitto/data/dbs/default", 0777);
     mkdir("/mosquitto/data/metastore", 0777);
     mkdir("/mosquitto/log", 0777);
+    chmod("/mosquitto/log", 0777);  /* Ensure writable even if already exists */
     
     /* Touch log file so mosquitto can write to it */
     FILE *logf = fopen("/mosquitto/log/mosquitto.log", "a");
     if (logf) fclose(logf);
     chmod("/mosquitto/log/mosquitto.log", 0666);
     
-    /* Copy dynsec.json to a writable location if it doesn't exist there */
-    if (access("/mosquitto/data/dynsec.json", F_OK) != 0) {
-        copy_file("/mosquitto/config/dynsec.json", "/mosquitto/data/dynsec.json");
-        chmod("/mosquitto/data/dynsec.json", 0666);
-    }
+    /* Make dynsec.json writable (it's read-only from COPY in Dockerfile) */
+    chmod("/mosquitto/config/dynsec.json", 0666);
     
     /* Start nginx */
     char *nginx_argv[] = {"/usr/sbin/nginx", "-g", "daemon off;", NULL};

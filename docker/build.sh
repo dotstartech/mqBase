@@ -1,10 +1,13 @@
 #!/bin/bash
 # Build Docker image for mqbase
 # Tags the image with both the version from mqbase.properties and 'latest'
-# Usage: ./build.sh [--no-cache] [--release] [--distroless]
-#   --no-cache    Build without using Docker cache
-#   --release     Minify app.js for production build
-#   --distroless  Build using distroless base image (tagged as X.X.X-distroless)
+# Usage: ./build.sh [options]
+#   --no-cache     Build without using Docker cache
+#   --release      Minify app.js for production build
+#   --distroless   Build using distroless base image (tagged as X.X.X-distroless)
+#   --arm64        Build for ARM64 architecture (for Raspberry Pi, etc.)
+#   --multi-arch   Build for both AMD64 and ARM64 (requires buildx, pushes to registry)
+#   --push         Push to registry (used with --multi-arch)
 
 set -e
 
@@ -12,6 +15,9 @@ set -e
 NO_CACHE=""
 RELEASE=""
 DISTROLESS=""
+ARM64=""
+MULTI_ARCH=""
+PUSH=""
 for arg in "$@"; do
     case $arg in
         --no-cache)
@@ -22,6 +28,15 @@ for arg in "$@"; do
             ;;
         --distroless)
             DISTROLESS="1"
+            ;;
+        --arm64)
+            ARM64="1"
+            ;;
+        --multi-arch)
+            MULTI_ARCH="1"
+            ;;
+        --push)
+            PUSH="1"
             ;;
     esac
 done
@@ -88,14 +103,69 @@ else
     LATEST_TAG="latest"
 fi
 
+# Add ARM64 suffix if building for ARM64 only
+if [[ -n "$ARM64" ]] && [[ -z "$MULTI_ARCH" ]]; then
+    VERSION_TAG="${VERSION_TAG}-arm64"
+    LATEST_TAG="${LATEST_TAG}-arm64"
+    echo "  (ARM64 build)"
+fi
+
+# Determine platform(s)
+PLATFORM=""
+if [[ -n "$MULTI_ARCH" ]]; then
+    PLATFORM="linux/amd64,linux/arm64"
+    echo "  (multi-arch build: amd64 + arm64)"
+elif [[ -n "$ARM64" ]]; then
+    PLATFORM="linux/arm64"
+fi
+
 # Build and tag with version, passing host user UID/GID
-docker build $NO_CACHE \
-    --build-arg UID=$(id -u) \
-    --build-arg GID=$(id -g) \
-    -t "$IMAGE_NAME:$VERSION_TAG" \
-    -t "$IMAGE_NAME:$LATEST_TAG" \
-    -f "$DOCKERFILE" \
-    "$PROJECT_DIR"
+if [[ -n "$MULTI_ARCH" ]]; then
+    # Multi-arch build requires buildx and pushing to a registry
+    if [[ -z "$PUSH" ]]; then
+        echo "Error: --multi-arch requires --push (images must be pushed to registry)"
+        echo "       Use: ./build.sh --multi-arch --push"
+        exit 1
+    fi
+    
+    # Ensure buildx builder exists
+    if ! docker buildx inspect mqbase-builder &>/dev/null; then
+        echo "Creating buildx builder 'mqbase-builder'..."
+        docker buildx create --name mqbase-builder --driver docker-container --use
+    else
+        docker buildx use mqbase-builder
+    fi
+    
+    docker buildx build $NO_CACHE \
+        --platform "$PLATFORM" \
+        --build-arg UID=$(id -u) \
+        --build-arg GID=$(id -g) \
+        -t "$IMAGE_NAME:$VERSION_TAG" \
+        -t "$IMAGE_NAME:$LATEST_TAG" \
+        -f "$DOCKERFILE" \
+        --push \
+        "$PROJECT_DIR"
+elif [[ -n "$PLATFORM" ]]; then
+    # Single architecture cross-compile (e.g., ARM64 on AMD64 host)
+    docker buildx build $NO_CACHE \
+        --platform "$PLATFORM" \
+        --build-arg UID=$(id -u) \
+        --build-arg GID=$(id -g) \
+        -t "$IMAGE_NAME:$VERSION_TAG" \
+        -t "$IMAGE_NAME:$LATEST_TAG" \
+        -f "$DOCKERFILE" \
+        --load \
+        "$PROJECT_DIR"
+else
+    # Native build
+    docker build $NO_CACHE \
+        --build-arg UID=$(id -u) \
+        --build-arg GID=$(id -g) \
+        -t "$IMAGE_NAME:$VERSION_TAG" \
+        -t "$IMAGE_NAME:$LATEST_TAG" \
+        -f "$DOCKERFILE" \
+        "$PROJECT_DIR"
+fi
 
 # Restore original app.js if we minified it
 if [[ -n "$CLEANUP_MINIFIED" ]]; then

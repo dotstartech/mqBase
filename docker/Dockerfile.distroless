@@ -127,28 +127,38 @@ RUN curl -o /tmp/nginx.tar.gz https://nginx.org/download/nginx-${NGINX_VERSION}.
 RUN gcc -Wall -O2 -o /build/mqbase-init /tmp/mqbase-init.c -lcrypt \
     && strip /build/mqbase-init
 
-# Collect all required shared libraries
+# Detect architecture and set library paths
+ARG TARGETARCH
+RUN echo "Building for architecture: ${TARGETARCH:-amd64}"
+
+# Collect all required shared libraries (architecture-aware)
 RUN mkdir -p /build/libs \
+    && case "$(uname -m)" in \
+        x86_64)  LIB_ARCH="x86_64-linux-gnu"; LD_PATH="/lib64/ld-linux-x86-64.so.2" ;; \
+        aarch64) LIB_ARCH="aarch64-linux-gnu"; LD_PATH="/lib/ld-linux-aarch64.so.1" ;; \
+        *)       echo "Unsupported architecture: $(uname -m)"; exit 1 ;; \
+    esac \
     && for lib in \
-        /lib/x86_64-linux-gnu/libssl.so.3 \
-        /lib/x86_64-linux-gnu/libcrypto.so.3 \
-        /lib/x86_64-linux-gnu/libcjson.so.1 \
-        /lib/x86_64-linux-gnu/libsqlite3.so.0 \
-        /lib/x86_64-linux-gnu/libpcre2-8.so.0 \
-        /lib/x86_64-linux-gnu/libz.so.1 \
-        /lib/x86_64-linux-gnu/libpthread.so.0 \
-        /lib/x86_64-linux-gnu/libdl.so.2 \
-        /lib/x86_64-linux-gnu/libm.so.6 \
-        /lib/x86_64-linux-gnu/libc.so.6 \
-        /lib/x86_64-linux-gnu/libgcc_s.so.1 \
-        /lib/x86_64-linux-gnu/libcrypt.so.1 \
-        /lib/x86_64-linux-gnu/libzstd.so.1 \
-        /lib/x86_64-linux-gnu/libstdc++.so.6 \
+        /lib/${LIB_ARCH}/libssl.so.3 \
+        /lib/${LIB_ARCH}/libcrypto.so.3 \
+        /lib/${LIB_ARCH}/libcjson.so.1 \
+        /lib/${LIB_ARCH}/libsqlite3.so.0 \
+        /lib/${LIB_ARCH}/libpcre2-8.so.0 \
+        /lib/${LIB_ARCH}/libz.so.1 \
+        /lib/${LIB_ARCH}/libpthread.so.0 \
+        /lib/${LIB_ARCH}/libdl.so.2 \
+        /lib/${LIB_ARCH}/libm.so.6 \
+        /lib/${LIB_ARCH}/libc.so.6 \
+        /lib/${LIB_ARCH}/libgcc_s.so.1 \
+        /lib/${LIB_ARCH}/libcrypt.so.1 \
+        /lib/${LIB_ARCH}/libzstd.so.1 \
+        /lib/${LIB_ARCH}/libstdc++.so.6 \
     ; do \
         if [ -f "$lib" ]; then cp -L "$lib" /build/libs/; fi; \
     done \
-    && cp -L /lib64/ld-linux-x86-64.so.2 /build/libs/ \
-    && ldd /build/mqbase-init | grep "=>" | awk '{print $3}' | xargs -I{} cp -L {} /build/libs/ 2>/dev/null || true
+    && cp -L "$LD_PATH" /build/libs/ld-linux.so \
+    && ldd /build/mqbase-init | grep "=>" | awk '{print $3}' | xargs -I{} cp -L {} /build/libs/ 2>/dev/null || true \
+    && echo "$LIB_ARCH" > /build/lib_arch
 
 # Create empty directories for COPY later
 RUN mkdir -p /build/empty
@@ -158,11 +168,22 @@ RUN echo 'root:x:0:\nnobody:x:65534:\nnogroup:x:65534:\ntty:x:5:\nstaff:x:50:\nn
 
 # Create distroless-compatible mosquitto config:
 # - Remove 'user admin' line (no user exists in distroless)
-# - Change dynsec.json path to /mosquitto/data (writable location)
 COPY mosquitto/config/mosquitto.conf /tmp/mosquitto-base.conf
 RUN sed -e '/^user admin$/d' \
-        -e 's|/mosquitto/config/dynsec.json|/mosquitto/data/dynsec.json|' \
         /tmp/mosquitto-base.conf > /build/mosquitto-distroless.conf
+
+# Prepare library directory structure for final stage (architecture-aware)
+# Create separate directories for amd64 and arm64, only one will be populated
+RUN mkdir -p /build/final-libs-amd64/lib64 /build/final-libs-amd64/lib/x86_64-linux-gnu \
+    && mkdir -p /build/final-libs-arm64/lib /build/final-libs-arm64/lib/aarch64-linux-gnu \
+    && case "$(uname -m)" in \
+        x86_64)  cp /build/libs/ld-linux.so /build/final-libs-amd64/lib64/ld-linux-x86-64.so.2 \
+                 && cp /build/libs/*.so.* /build/final-libs-amd64/lib/x86_64-linux-gnu/ \
+                 && echo "amd64" > /build/target_arch ;; \
+        aarch64) cp /build/libs/ld-linux.so /build/final-libs-arm64/lib/ld-linux-aarch64.so.1 \
+                 && cp /build/libs/*.so.* /build/final-libs-arm64/lib/aarch64-linux-gnu/ \
+                 && echo "arm64" > /build/target_arch ;; \
+    esac
 
 # ============================================================================
 # Final stage: Google Distroless (Debian 13 Trixie to match builder)
@@ -172,9 +193,13 @@ FROM gcr.io/distroless/base-debian13
 LABEL maintainer="dotStar Technologies" \
       description="mqBase - Mosquitto MQTT Broker with libSQL Persistency and Web Admin Interface (distroless)"
 
-# Copy dynamic linker and shared libraries
-COPY --from=builder /build/libs/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
-COPY --from=builder /build/libs/*.so.* /lib/x86_64-linux-gnu/
+# Copy dynamic linker and shared libraries for amd64
+COPY --from=builder /build/final-libs-amd64/lib64/* /lib64/
+COPY --from=builder /build/final-libs-amd64/lib/x86_64-linux-gnu/* /lib/x86_64-linux-gnu/
+
+# Copy dynamic linker and shared libraries for arm64
+COPY --from=builder /build/final-libs-arm64/lib/ld-linux-aarch64.so.1* /lib/
+COPY --from=builder /build/final-libs-arm64/lib/aarch64-linux-gnu/* /lib/aarch64-linux-gnu/
 
 # Copy binaries
 COPY --from=builder /build/mosq/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so.1

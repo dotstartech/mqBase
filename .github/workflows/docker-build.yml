@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Push Docker Images
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: '0.1.0'
       push_latest:
-        description: 'Also tag as latest'
+        description: 'Also tag amd64 standard image as latest'
         required: false
         type: boolean
         default: true
@@ -27,6 +27,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -54,63 +57,96 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Standard image metadata
-      - name: Extract metadata for standard image
-        id: meta-standard
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.DOCKERHUB_IMAGE }}
-            ${{ env.GHCR_IMAGE }}
-          tags: |
-            type=raw,value=${{ inputs.version }}
-            type=raw,value=latest,enable=${{ inputs.push_latest }}
-
-      # Distroless image metadata
-      - name: Extract metadata for distroless image
-        id: meta-distroless
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.DOCKERHUB_IMAGE }}
-            ${{ env.GHCR_IMAGE }}
-          tags: |
-            type=raw,value=${{ inputs.version }}-distroless
-            type=raw,value=latest-distroless,enable=${{ inputs.push_latest }}
-
-      - name: Build and push standard Docker image
+      # =========================================================================
+      # Standard image - AMD64
+      # =========================================================================
+      - name: Build and push standard AMD64 image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta-standard.outputs.tags }}
-          labels: ${{ steps.meta-standard.outputs.labels }}
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-amd64
+            ${{ env.GHCR_IMAGE }}:${{ inputs.version }}-amd64
+            ${{ inputs.push_latest && format('{0}:latest', env.DOCKERHUB_IMAGE) || '' }}
+            ${{ inputs.push_latest && format('{0}:latest', env.GHCR_IMAGE) || '' }}
           build-args: |
             UID=1000
             GID=1000
-          cache-from: type=gha,scope=standard
-          cache-to: type=gha,mode=max,scope=standard
+          cache-from: type=gha,scope=standard-amd64
+          cache-to: type=gha,mode=max,scope=standard-amd64
 
-      - name: Build and push distroless Docker image
+      # =========================================================================
+      # Standard image - ARM64
+      # =========================================================================
+      - name: Build and push standard ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-arm64
+            ${{ env.GHCR_IMAGE }}:${{ inputs.version }}-arm64
+          build-args: |
+            UID=1000
+            GID=1000
+          cache-from: type=gha,scope=standard-arm64
+          cache-to: type=gha,mode=max,scope=standard-arm64
+
+      # =========================================================================
+      # Distroless image - AMD64
+      # =========================================================================
+      - name: Build and push distroless AMD64 image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile.distroless
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta-distroless.outputs.tags }}
-          labels: ${{ steps.meta-distroless.outputs.labels }}
-          cache-from: type=gha,scope=distroless
-          cache-to: type=gha,mode=max,scope=distroless
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-amd64-distroless
+            ${{ env.GHCR_IMAGE }}:${{ inputs.version }}-amd64-distroless
+          cache-from: type=gha,scope=distroless-amd64
+          cache-to: type=gha,mode=max,scope=distroless-amd64
+
+      # =========================================================================
+      # Distroless image - ARM64
+      # =========================================================================
+      - name: Build and push distroless ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.distroless
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-arm64-distroless
+            ${{ env.GHCR_IMAGE }}:${{ inputs.version }}-arm64-distroless
+          cache-from: type=gha,scope=distroless-arm64
+          cache-to: type=gha,mode=max,scope=distroless-arm64
 
       - name: Summary
         run: |
           echo "## Images pushed successfully! :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Standard Image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Standard Images (debian:trixie-slim)" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Docker Hub | GitHub Container Registry |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|------------|---------------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| AMD64 | \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-amd64\` | \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}-amd64\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ARM64 | \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-arm64\` | \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}-arm64\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Distroless Image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-distroless\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}-distroless\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Distroless Images (gcr.io/distroless/base-debian13)" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Docker Hub | GitHub Container Registry |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|------------|---------------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| AMD64 | \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-amd64-distroless\` | \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}-amd64-distroless\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ARM64 | \`${{ env.DOCKERHUB_IMAGE }}:${{ inputs.version }}-arm64-distroless\` | \`${{ env.GHCR_IMAGE }}:${{ inputs.version }}-arm64-distroless\` |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.push_latest }}" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Latest Tag" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.DOCKERHUB_IMAGE }}:latest\` → AMD64 standard image" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.GHCR_IMAGE }}:latest\` → AMD64 standard image" >> $GITHUB_STEP_SUMMARY
+          fi
