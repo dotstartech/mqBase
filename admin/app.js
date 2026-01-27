@@ -354,8 +354,8 @@ function performLogout() {
     
     const brokerTbody = document.querySelector('#mqtt-messages-table tbody');
     if (brokerTbody) {
-        //brokerTbody.innerHTML = '<tr><td colspan="6" class="login-required">Please log in to view data</td></tr>';
-        brokerTbody.innerHTML = '<tr><td colspan="6" class="login-required"></td></tr>';
+        //brokerTbody.innerHTML = '<tr><td colspan="7" class="login-required">Please log in to view data</td></tr>';
+        brokerTbody.innerHTML = '<tr><td colspan="7" class="login-required"></td></tr>';
     }
     
     // Stop auto-refresh if running
@@ -1438,8 +1438,8 @@ async function initMqttConnection() {
             // Subscribe to topic with:
             // - rap: Retain As Published - preserve retain flag on forwarded messages
             // - rh: Retain Handling 0 - send retained messages at subscribe time
-            // - qos: Quality of Service level
-            mqttClient.subscribe(MQTT_TOPIC, { rap: true, rh: 0, qos: 1 }, (err, granted) => {
+            // - qos: Quality of Service level 2 to receive messages at their original QoS
+            mqttClient.subscribe(MQTT_TOPIC, { rap: true, rh: 0, qos: 2 }, (err, granted) => {
                 if (err) {
                     console.error('Subscribe error:', err);
                     updateMqttStatus('Error', '❌', 'var(--ctp-red)');
@@ -1496,6 +1496,7 @@ async function initMqttConnection() {
                 topic: topic,
                 payload: payloadStr,
                 retain: packet.retain === true,
+                qos: packet.qos,
                 ulid: ulid
             };
             
@@ -1653,8 +1654,8 @@ function displayMqttMessages() {
     
     // Show login required message if not authenticated
     if (!mqbaseCredentials) {
-        //tbody.innerHTML = '<tr><td colspan="6" class="login-required">Please log in to view data</td></tr>';
-        tbody.innerHTML = '<tr><td colspan="6" class="login-required"></td></tr>';
+        //tbody.innerHTML = '<tr><td colspan="7" class="login-required">Please log in to view data</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="login-required"></td></tr>';
         return;
     }
     
@@ -1733,11 +1734,15 @@ function displayMqttMessages() {
         // Format timestamp at display time using user preference
         const formattedTimestamp = formatTimestamp(new Date(msg.timestampMs));
         
+        // Build QoS column
+        const qosHtml = msg.qos !== undefined ? msg.qos : '';
+        
         row.innerHTML = `
             <td class="timestamp">${formattedTimestamp}</td>
             ${topicCell}
             ${payloadCell}
             <td class="headers">${headersHtml}</td>
+            <td class="qos">${qosHtml}</td>
             <td class="retained">${retainedHtml}</td>
             <td class="actions">${actionsHtml}</td>
         `;
@@ -1914,6 +1919,90 @@ function updateThemeToggle(theme) {
 function loadThemePreference() {
     const savedTheme = getCookie('theme') || 'dark';
     setTheme(savedTheme);
+}
+
+// =============================================================================
+// Column Visibility Toggle Functions
+// =============================================================================
+
+function toggleQosColumn() {
+    const isHidden = document.body.classList.toggle('hide-qos-column');
+    updateQosToggle(!isHidden);
+    setCookie('showQosColumn', !isHidden ? 'true' : 'false', 365);
+}
+
+function toggleRetainedColumn() {
+    const isHidden = document.body.classList.toggle('hide-retained-column');
+    updateRetainedToggle(!isHidden);
+    setCookie('showRetainedColumn', !isHidden ? 'true' : 'false', 365);
+}
+
+function updateQosToggle(show) {
+    const slider = document.getElementById('qosSlider');
+    const hideLabel = document.getElementById('qosLabelHide');
+    const showLabel = document.getElementById('qosLabelShow');
+    
+    if (slider) {
+        if (show) {
+            slider.classList.add('on');
+        } else {
+            slider.classList.remove('on');
+        }
+    }
+    
+    if (hideLabel && showLabel) {
+        if (show) {
+            hideLabel.classList.remove('active');
+            showLabel.classList.add('active');
+        } else {
+            hideLabel.classList.add('active');
+            showLabel.classList.remove('active');
+        }
+    }
+}
+
+function updateRetainedToggle(show) {
+    const slider = document.getElementById('retainedSlider');
+    const hideLabel = document.getElementById('retainedLabelHide');
+    const showLabel = document.getElementById('retainedLabelShow');
+    
+    if (slider) {
+        if (show) {
+            slider.classList.add('on');
+        } else {
+            slider.classList.remove('on');
+        }
+    }
+    
+    if (hideLabel && showLabel) {
+        if (show) {
+            hideLabel.classList.remove('active');
+            showLabel.classList.add('active');
+        } else {
+            hideLabel.classList.add('active');
+            showLabel.classList.remove('active');
+        }
+    }
+}
+
+function loadColumnVisibilityPreferences() {
+    const showQos = getCookie('showQosColumn');
+    const showRetained = getCookie('showRetainedColumn');
+    
+    // Default to showing columns if no preference saved
+    if (showQos === 'false') {
+        document.body.classList.add('hide-qos-column');
+        updateQosToggle(false);
+    } else {
+        updateQosToggle(true);
+    }
+    
+    if (showRetained === 'false') {
+        document.body.classList.add('hide-retained-column');
+        updateRetainedToggle(false);
+    } else {
+        updateRetainedToggle(true);
+    }
 }
 
 // =============================================================================
@@ -2095,6 +2184,9 @@ window.addEventListener('DOMContentLoaded', () => {
     
     // Load saved font preference
     loadFontPreference();
+    
+    // Load column visibility preferences
+    loadColumnVisibilityPreferences();
     
     // Restore active tab from cookie
     restoreActiveTab();

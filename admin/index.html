@@ -46,6 +46,26 @@
                             <option value="short">YY-MM-DD</option>
                         </select>
                     </div>
+                    <div class="menu-item menu-item-row">
+                        <span>QoS Column</span>
+                        <div class="column-toggle">
+                            <span id="qosLabelHide" class="toggle-label">Hide</span>
+                            <div id="qosSlider" class="toggle-slider" onclick="toggleQosColumn()">
+                                <div class="toggle-slider-knob"></div>
+                            </div>
+                            <span id="qosLabelShow" class="toggle-label active">Show</span>
+                        </div>
+                    </div>
+                    <div class="menu-item menu-item-row">
+                        <span>Retained Column</span>
+                        <div class="column-toggle">
+                            <span id="retainedLabelHide" class="toggle-label">Hide</span>
+                            <div id="retainedSlider" class="toggle-slider" onclick="toggleRetainedColumn()">
+                                <div class="toggle-slider-knob"></div>
+                            </div>
+                            <span id="retainedLabelShow" class="toggle-label active">Show</span>
+                        </div>
+                    </div>
                     <div class="menu-separator"></div>
                     <div id="authMenuItem" class="menu-item" onclick="handleAuthMenuClick()">
                         Login
@@ -299,6 +319,7 @@
                             <th>Topic</th>
                             <th>Payload</th>
                             <th>Headers</th>
+                            <th>QoS</th>
                             <th>Retained</th>
                             <th>Actions</th>
                         </tr>
