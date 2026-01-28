@@ -559,6 +559,11 @@ td:first-child {
     font-size: 16px;
 }
 
+.loading-cell {
+    text-align: center;
+    padding: 0;
+}
+
 .limit-warning {
     background: var(--ctp-surface0);
     border: 1px solid var(--ctp-yellow);

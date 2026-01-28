@@ -12,6 +12,7 @@ const API_BASE = '/db-admin';
 let autoRefreshInterval = null;
 let isAutoRefreshEnabled = false;
 let lastQueryResult = null;
+let dbConnFailureCount = 0;  // Track consecutive DB connection failures
 
 // MQTT state
 let mqttClient = null;
@@ -195,13 +196,127 @@ function getCookie(name) {
     return null;
 }
 
-// =============================================================================
-// Database Tab Functions
-// =============================================================================
-
 // mqBase authentication credentials (stored in memory for session)
 let mqbaseCredentials = null;
 let loginModalOpen = false;
+
+// Session persistence configuration
+const SESSION_STORAGE_KEY = 'mqbase_session';
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+// Save session to localStorage with expiry timestamp
+function saveSession() {
+    if (!mqbaseCredentials) return;
+    
+    const session = {
+        username: mqbaseCredentials.username,
+        password: btoa(mqbaseCredentials.password), // Light obfuscation
+        expiresAt: Date.now() + SESSION_TIMEOUT_MS
+    };
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+// Load session from localStorage if valid (not expired)
+function loadSession() {
+    try {
+        const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        if (!stored) return false;
+        
+        const session = JSON.parse(stored);
+        
+        // Check if session has expired
+        if (Date.now() > session.expiresAt) {
+            clearSession();
+            return false;
+        }
+        
+        // Restore credentials
+        mqbaseCredentials = {
+            username: session.username,
+            password: atob(session.password)
+        };
+        
+        // Refresh session timeout on restore
+        refreshSessionTimeout();
+        
+        return true;
+    } catch (e) {
+        console.error('Failed to load session:', e);
+        clearSession();
+        return false;
+    }
+}
+
+// Clear session from localStorage
+function clearSession() {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+// Refresh session timeout (called on user activity)
+function refreshSessionTimeout() {
+    if (!mqbaseCredentials) return;
+    
+    const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!stored) {
+        saveSession();
+        return;
+    }
+    
+    try {
+        const session = JSON.parse(stored);
+        session.expiresAt = Date.now() + SESSION_TIMEOUT_MS;
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    } catch (e) {
+        saveSession();
+    }
+}
+
+// Throttled version of refreshSessionTimeout to avoid excessive localStorage writes
+let lastActivityRefresh = 0;
+const ACTIVITY_THROTTLE_MS = 10000; // Only refresh every 10 seconds max
+
+function throttledRefreshSession() {
+    if (!mqbaseCredentials) return;
+    
+    const now = Date.now();
+    if (now - lastActivityRefresh > ACTIVITY_THROTTLE_MS) {
+        lastActivityRefresh = now;
+        refreshSessionTimeout();
+    }
+}
+
+// Set up global event listeners for user activity to refresh session
+function setupSessionActivityListeners() {
+    const activityEvents = ['click', 'keydown', 'scroll', 'mousemove', 'touchstart'];
+    
+    activityEvents.forEach(eventType => {
+        document.addEventListener(eventType, throttledRefreshSession, { passive: true });
+    });
+}
+
+// Check if session has expired and perform auto-logout if needed
+function checkSessionExpiry() {
+    if (!mqbaseCredentials) return;
+    
+    try {
+        const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        if (!stored) {
+            // No stored session but credentials in memory - logout
+            console.log('Session not found in storage, logging out');
+            performLogout();
+            return;
+        }
+        
+        const session = JSON.parse(stored);
+        if (Date.now() > session.expiresAt) {
+            console.log('Session expired, logging out');
+            performLogout();
+        }
+    } catch (e) {
+        console.error('Session check failed:', e);
+        performLogout();
+    }
+}
 
 function getDbAuthHeader() {
     if (mqbaseCredentials) {
@@ -266,8 +381,9 @@ async function handleLogin(event) {
             return;
         }
         
-        // Credentials are valid - store them
+        // Credentials are valid - store them and save session
         mqbaseCredentials = { username, password };
+        saveSession();
         closeLoginModal();
         updateAuthMenuItem();
         
@@ -336,12 +452,15 @@ function handleAuthButtonClick() {
 // Perform logout - clear credentials and data
 function performLogout() {
     mqbaseCredentials = null;
+    clearSession();
     loginModalOpen = false;
     updateAuthMenuItem();
     
-    // Clear database tab data
-    //document.getElementById('results').innerHTML = '<div class="no-results">Please log in to view data</div>';
-    document.getElementById('results').innerHTML = '<div class="no-results"></div>';
+    // Clear database tab data - only clear tbody, keep table structure
+    const dbTbody = document.querySelector('#db-messages-table tbody');
+    if (dbTbody) {
+        dbTbody.innerHTML = '';
+    }
     document.getElementById('dbStatusIcon').textContent = '⚫';
     
     // Clear broker tab data and disconnect MQTT
@@ -352,10 +471,10 @@ function performLogout() {
     window.mqttConnected = false;
     updateMqttStatus('Disconnected', '⚫', 'var(--ctp-overlay0)');
     
+    // Clear broker table - only clear tbody, keep table structure
     const brokerTbody = document.querySelector('#mqtt-messages-table tbody');
     if (brokerTbody) {
-        //brokerTbody.innerHTML = '<tr><td colspan="7" class="login-required">Please log in to view data</td></tr>';
-        brokerTbody.innerHTML = '<tr><td colspan="7" class="login-required"></td></tr>';
+        brokerTbody.innerHTML = '';
     }
     
     // Stop auto-refresh if running
@@ -363,6 +482,10 @@ function performLogout() {
         toggleAutoRefresh(true);
     }
 }
+
+// =============================================================================
+// Database Tab Functions
+// =============================================================================
 
 async function executeSQL(sql) {
     try {
@@ -408,22 +531,38 @@ async function executeSQL(sql) {
 }
 
 async function dbConnState() {
-    // Show connecting state
-    document.getElementById('dbStatusIcon').textContent = '🟡';
+    // Skip DB connection check if not logged in
+    if (!mqbaseCredentials) {
+        document.getElementById('dbStatusIcon').textContent = '⚫';
+        return;
+    }
     
     try {
         // Simple query to test database connectivity
+        // Skip session refresh - this is a background status check, not user activity
         const result = await executeSQL(`SELECT COUNT(*) FROM msg LIMIT 1`);
         if (result.result) {
             document.getElementById('dbStatusIcon').textContent = '🟢';
+            dbConnFailureCount = 0;  // Reset failure counter on success
         }
     } catch (error) {
         console.error('Error loading stats:', error);
-        document.getElementById('dbStatusIcon').textContent = '🔴';
+        dbConnFailureCount++;
+        // Only show disconnected (red) after 3 consecutive failures
+        if (dbConnFailureCount >= 3) {
+            document.getElementById('dbStatusIcon').textContent = '🔴';
+        } else {
+            document.getElementById('dbStatusIcon').textContent = '🟡';  // Show yellow during transient failures
+        }
     }
 }
 
 async function loadMessages() {
+    // Skip if not logged in
+    if (!mqbaseCredentials) {
+        return;
+    }
+    
     // Save filter preferences to cookies
     saveFilterPreferences();
     
@@ -552,22 +691,25 @@ function hasResultChanged(newResult) {
 }
 
 function displayResults(data, limitEnforced = false) {
-    const resultsDiv = document.getElementById('results');
+    const tbody = document.querySelector('#db-messages-table tbody');
+    const messageDiv = document.getElementById('message');
+    
     if (!data.result) {
-        resultsDiv.innerHTML = '<div class="no-results">No results returned</div>';
+        tbody.innerHTML = '';
+        showMessage('No results returned', 'info');
         return;
     }
 
     const result = data.result;
     if (!result.rows || result.rows.length === 0) {
-        resultsDiv.innerHTML = '<div class="no-results">No messages found</div>';
+        tbody.innerHTML = '';
+        showMessage('No messages found', 'info');
         return;
     }
 
     // Show warning if limit was enforced and results are at the limit
-    let warningHtml = '';
     if (limitEnforced && result.rows.length >= MAX_DB_RESULTS) {
-        warningHtml = `<div class="limit-warning">⚠️ Results limited to ${MAX_DB_RESULTS} rows. Add a more specific WHERE clause or use a smaller LIMIT.</div>`;
+        showMessage(`⚠️ Results limited to ${MAX_DB_RESULTS} rows. Add a more specific WHERE clause or use a smaller LIMIT.`, 'warning');
     }
 
     // Create a map of column indices (case-insensitive)
@@ -576,15 +718,8 @@ function displayResults(data, limitEnforced = false) {
         colMap[col.name.toLowerCase()] = index;
     });
 
-    // Standard 4-column table header
-    let html = '<table><thead><tr>';
-    html += '<th>Timestamp</th>';
-    html += '<th>Topic</th>';
-    html += '<th>Payload</th>';
-    html += '<th>Headers</th>';
-    html += '</tr></thead><tbody>';
-    
     // Build rows with standard 4-column format
+    let html = '';
     result.rows.forEach(row => {
         html += '<tr>';
         
@@ -610,17 +745,24 @@ function displayResults(data, limitEnforced = false) {
         html += '</tr>';
     });
     
-    html += '</tbody></table>';
-    resultsDiv.innerHTML = warningHtml + html;
+    tbody.innerHTML = html;
 }
 
 function showLoading() {
-    document.getElementById('results').innerHTML = `
-        <div class="loading">
-            <div class="spinner"></div>
-            <p>Loading...</p>
-        </div>
-    `;
+    // Show loading indicator in the tbody while keeping table structure
+    const tbody = document.querySelector('#db-messages-table tbody');
+    if (tbody) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="4" class="loading-cell">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading...</p>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
 }
 
 function showMessage(text, type) {
@@ -635,6 +777,11 @@ function showMessage(text, type) {
 }
 
 function clearFilter() {
+    // Skip if not logged in
+    if (!mqbaseCredentials) {
+        return;
+    }
+    
     document.getElementById('topicFilter').value = '';
     document.getElementById('timeFilter').value = '7';
     document.getElementById('customQuery').value = '';
@@ -1646,16 +1793,14 @@ function executeDeleteRetainedMessage(topic, ulid) {
 }
 
 function displayMqttMessages() {
-    const tbody = document.querySelector('#mqtt-messages-table tbody');
-    if (!tbody) {
-        console.log('ERROR: tbody not found');
+    // Skip if not logged in - don't modify table at all
+    if (!mqbaseCredentials) {
         return;
     }
     
-    // Show login required message if not authenticated
-    if (!mqbaseCredentials) {
-        //tbody.innerHTML = '<tr><td colspan="7" class="login-required">Please log in to view data</td></tr>';
-        tbody.innerHTML = '<tr><td colspan="7" class="login-required"></td></tr>';
+    const tbody = document.querySelector('#mqtt-messages-table tbody');
+    if (!tbody) {
+        console.log('ERROR: tbody not found');
         return;
     }
     
@@ -1753,6 +1898,11 @@ function displayMqttMessages() {
 }
 
 function clearMqttMessages() {
+    // Skip if not logged in
+    if (!mqbaseCredentials) {
+        return;
+    }
+    
     // Clear the filter input
     const filterInput = document.getElementById('brokerTopicFilter');
     if (filterInput) {
@@ -2170,6 +2320,11 @@ window.addEventListener('DOMContentLoaded', () => {
     // Load app configuration first
     loadAppConfig();
     
+    // Restore session from localStorage if valid
+    if (loadSession()) {
+        updateAuthMenuItem();
+    }
+    
     // Load saved filter preferences before loading data
     loadFilterPreferences();
     
@@ -2178,6 +2333,12 @@ window.addEventListener('DOMContentLoaded', () => {
     
     // Auto-refresh stats every 3 seconds
     setInterval(dbConnState, 3000);
+    
+    // Check session expiry every 30 seconds for auto-logout
+    setInterval(checkSessionExpiry, 30 * 1000);
+    
+    // Set up global activity listeners to refresh session on user interaction
+    setupSessionActivityListeners();
     
     // Load saved theme preference
     loadThemePreference();
