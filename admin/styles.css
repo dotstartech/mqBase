@@ -124,7 +124,7 @@ body.sidebar-open .main-content {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
+    padding: 6px 16px;
     border-bottom: 1px solid var(--ctp-surface0);
     font-weight: 600;
     color: var(--ctp-text);
@@ -1639,6 +1639,33 @@ td.actions {
     color: var(--ctp-red);
     font-size: 13px;
     margin-bottom: 16px;
+}
+
+.remember-me {
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.remember-me .checkbox-label {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ctp-text);
+    font-weight: normal;
+    margin-bottom: 0;
+}
+
+.remember-me .checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    margin: 0;
+}
+
+.remember-me .checkbox-label span {
+    color: var(--ctp-subtext0);
 }
 
 .login-modal .modal-buttons {

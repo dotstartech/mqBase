@@ -26,6 +26,64 @@ const MQTT_TOPIC = '#';  // Subscribe to all topics
 // Utility Functions
 // =============================================================================
 
+// Debounce function to prevent rapid repeated calls
+// Returns a wrapper that delays execution until `wait` ms have passed without another call
+function debounce(func, wait = 300) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+// Track in-flight requests to prevent duplicate submissions
+const pendingRequests = new Map();
+
+// Wrapper to prevent duplicate concurrent requests
+// key: unique identifier for the request type
+// asyncFn: the async function to execute
+async function preventDuplicateRequest(key, asyncFn) {
+    if (pendingRequests.has(key)) {
+        console.log(`Request '${key}' already in progress, skipping`);
+        return null;
+    }
+    
+    pendingRequests.set(key, true);
+    try {
+        return await asyncFn();
+    } finally {
+        pendingRequests.delete(key);
+    }
+}
+
+// Escape special characters for SQL to prevent SQL injection
+// This escapes single quotes and backslashes which are the main vectors
+function escapeSql(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "''")
+        .replace(/\x00/g, '')  // Remove null bytes
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+}
+
+// Escape special characters for HTML to prevent XSS
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+}
+
 // Copy text to clipboard and show feedback
 function copyToClipboard(text, iconElement) {
     navigator.clipboard.writeText(text).then(() => {
@@ -57,8 +115,11 @@ function truncateForDisplay(value, maxLength = MAX_DISPLAY_LENGTH) {
 function makeCopyableCell(className, value) {
     const fullValue = value !== null && value !== undefined ? String(value) : '';
     const displayValue = value !== null && value !== undefined ? String(value) : 'NULL';
-    const escapedValue = fullValue.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-    return `<td class="${className} copyable" title="${escapedValue}"><span class="cell-text">${displayValue}</span><span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${escapedValue}', this)" title="Copy to clipboard">📋</span></td>`;
+    // Escape for HTML display and for JavaScript string in onclick
+    const htmlEscaped = escapeHtml(displayValue);
+    const jsEscaped = fullValue.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+    const titleEscaped = escapeHtml(fullValue);
+    return `<td class="${className} copyable" title="${titleEscaped}"><span class="cell-text">${htmlEscaped}</span><span class="copy-icon" onclick="event.stopPropagation(); copyToClipboard('${jsEscaped}', this)" title="Copy to clipboard">📋</span></td>`;
 }
 
 // Crockford's Base32 alphabet used in ULID
@@ -204,22 +265,102 @@ let loginModalOpen = false;
 const SESSION_STORAGE_KEY = 'mqbase_session';
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
-// Save session to localStorage with expiry timestamp
-function saveSession() {
-    if (!mqbaseCredentials) return;
-    
-    const session = {
-        username: mqbaseCredentials.username,
-        password: btoa(mqbaseCredentials.password), // Light obfuscation
-        expiresAt: Date.now() + SESSION_TIMEOUT_MS
-    };
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+// Generate a cryptographically secure random key for session encryption
+async function generateSessionKey() {
+    return await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt']
+    );
 }
 
-// Load session from localStorage if valid (not expired)
-function loadSession() {
+// Encrypt data using Web Crypto API
+async function encryptData(data, key) {
+    const encoder = new TextEncoder();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encrypted = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv },
+        key,
+        encoder.encode(data)
+    );
+    // Combine IV and encrypted data
+    const combined = new Uint8Array(iv.length + encrypted.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(encrypted), iv.length);
+    return btoa(String.fromCharCode(...combined));
+}
+
+// Decrypt data using Web Crypto API
+async function decryptData(encryptedBase64, key) {
     try {
-        const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        const combined = new Uint8Array(atob(encryptedBase64).split('').map(c => c.charCodeAt(0)));
+        const iv = combined.slice(0, 12);
+        const encrypted = combined.slice(12);
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: iv },
+            key,
+            encrypted
+        );
+        return new TextDecoder().decode(decrypted);
+    } catch (e) {
+        return null;
+    }
+}
+
+// Session encryption key (cached in memory for performance)
+let sessionKey = null;
+
+// Save session to sessionStorage with encryption
+// Uses sessionStorage by default (cleared on browser close) for security
+// Uses localStorage only if "Remember Me" is checked
+async function saveSession(rememberMe = false) {
+    if (!mqbaseCredentials) return;
+    
+    try {
+        // Generate encryption key if not exists
+        if (!sessionKey) {
+            sessionKey = await generateSessionKey();
+        }
+        
+        const sessionData = JSON.stringify({
+            username: mqbaseCredentials.username,
+            password: mqbaseCredentials.password
+        });
+        
+        const encrypted = await encryptData(sessionData, sessionKey);
+        
+        // Export key for storage (always store key so page reload works)
+        const exportedKey = await crypto.subtle.exportKey('raw', sessionKey);
+        
+        const session = {
+            data: encrypted,
+            expiresAt: Date.now() + SESSION_TIMEOUT_MS,
+            key: btoa(String.fromCharCode(...new Uint8Array(exportedKey)))
+        };
+        
+        const storage = rememberMe ? localStorage : sessionStorage;
+        storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+        
+        // Clear from the other storage
+        const otherStorage = rememberMe ? sessionStorage : localStorage;
+        otherStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (e) {
+        console.error('Failed to save session:', e);
+        // Fallback to in-memory only
+    }
+}
+
+// Load session from storage if valid (not expired)
+async function loadSession() {
+    try {
+        // Try sessionStorage first (current browser session)
+        let stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+        
+        if (!stored) {
+            // Try localStorage (persistent "Remember Me" session)
+            stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        }
+        
         if (!stored) return false;
         
         const session = JSON.parse(stored);
@@ -230,14 +371,37 @@ function loadSession() {
             return false;
         }
         
-        // Restore credentials
+        // Restore encryption key from stored session
+        if (session.key) {
+            const keyData = new Uint8Array(atob(session.key).split('').map(c => c.charCodeAt(0)));
+            sessionKey = await crypto.subtle.importKey(
+                'raw',
+                keyData,
+                { name: 'AES-GCM', length: 256 },
+                true,
+                ['encrypt', 'decrypt']
+            );
+        } else if (!sessionKey) {
+            // No key available, cannot decrypt
+            clearSession();
+            return false;
+        }
+        
+        // Decrypt credentials
+        const decrypted = await decryptData(session.data, sessionKey);
+        if (!decrypted) {
+            clearSession();
+            return false;
+        }
+        
+        const credentials = JSON.parse(decrypted);
         mqbaseCredentials = {
-            username: session.username,
-            password: atob(session.password)
+            username: credentials.username,
+            password: credentials.password
         };
         
         // Refresh session timeout on restore
-        refreshSessionTimeout();
+        await refreshSessionTimeout();
         
         return true;
     } catch (e) {
@@ -247,27 +411,37 @@ function loadSession() {
     }
 }
 
-// Clear session from localStorage
+// Clear session from both storages
 function clearSession() {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     localStorage.removeItem(SESSION_STORAGE_KEY);
+    sessionKey = null;
 }
 
 // Refresh session timeout (called on user activity)
-function refreshSessionTimeout() {
+async function refreshSessionTimeout() {
     if (!mqbaseCredentials) return;
     
-    const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+    // Check which storage has the session
+    let stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    let storage = sessionStorage;
+    
     if (!stored) {
-        saveSession();
+        stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        storage = localStorage;
+    }
+    
+    if (!stored) {
+        await saveSession();
         return;
     }
     
     try {
         const session = JSON.parse(stored);
         session.expiresAt = Date.now() + SESSION_TIMEOUT_MS;
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+        storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
     } catch (e) {
-        saveSession();
+        await saveSession();
     }
 }
 
@@ -299,7 +473,12 @@ function checkSessionExpiry() {
     if (!mqbaseCredentials) return;
     
     try {
-        const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        // Check both storages
+        let stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+        if (!stored) {
+            stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        }
+        
         if (!stored) {
             // No stored session but credentials in memory - logout
             console.log('Session not found in storage, logging out');
@@ -352,6 +531,7 @@ async function handleLogin(event) {
     
     const username = document.getElementById('loginUsername').value;
     const password = document.getElementById('loginPassword').value;
+    const rememberMe = document.getElementById('loginRememberMe')?.checked || false;
     const errorDiv = document.getElementById('loginError');
     
     // Test credentials with a simple query
@@ -383,7 +563,7 @@ async function handleLogin(event) {
         
         // Credentials are valid - store them and save session
         mqbaseCredentials = { username, password };
-        saveSession();
+        await saveSession(rememberMe);
         closeLoginModal();
         updateAuthMenuItem();
         
@@ -419,13 +599,14 @@ function updateAuthMenuItem() {
     const menuItem = document.getElementById('authMenuItem');
     const authButton = document.getElementById('authButton');
     const label = mqbaseCredentials ? 'Logout' : 'Login';
+    //const label = mqbaseCredentials ? '⏻ Logout' : 'Login';
     
     if (menuItem) {
         menuItem.textContent = label;
     }
     if (authButton) {
         authButton.textContent = label;
-        authButton.title = label;
+        authButton.title = mqbaseCredentials ? 'Logout' : 'Login';
     }
 }
 
@@ -461,7 +642,8 @@ function performLogout() {
     if (dbTbody) {
         dbTbody.innerHTML = '';
     }
-    document.getElementById('dbStatusIcon').textContent = '⚫';
+    const dbStatusIcon = document.getElementById('dbStatusIcon');
+    if (dbStatusIcon) dbStatusIcon.textContent = '⚫';
     
     // Clear broker tab data and disconnect MQTT
     mqttMessagesMap.clear();
@@ -477,10 +659,29 @@ function performLogout() {
         brokerTbody.innerHTML = '';
     }
     
+    // Clear ACL tab data
+    const clientsTbody = document.querySelector('#clients-table tbody');
+    if (clientsTbody) {
+        clientsTbody.innerHTML = '';
+    }
+    const rolesTbody = document.querySelector('#roles-table tbody');
+    if (rolesTbody) {
+        rolesTbody.innerHTML = '';
+    }
+    const defaultAcl = document.getElementById('default-acl');
+    if (defaultAcl) {
+        defaultAcl.innerHTML = '';
+    }
+    window.aclDataLoaded = false;
+    window.availableRoles = [];
+    
     // Stop auto-refresh if running
     if (isAutoRefreshEnabled) {
         toggleAutoRefresh(true);
     }
+    
+    // Show login dialog after logout
+    showLoginModal();
 }
 
 // =============================================================================
@@ -531,9 +732,11 @@ async function executeSQL(sql) {
 }
 
 async function dbConnState() {
+    const dbStatusIcon = document.getElementById('dbStatusIcon');
+    
     // Skip DB connection check if not logged in
     if (!mqbaseCredentials) {
-        document.getElementById('dbStatusIcon').textContent = '⚫';
+        if (dbStatusIcon) dbStatusIcon.textContent = '⚫';
         return;
     }
     
@@ -542,7 +745,7 @@ async function dbConnState() {
         // Skip session refresh - this is a background status check, not user activity
         const result = await executeSQL(`SELECT COUNT(*) FROM msg LIMIT 1`);
         if (result.result) {
-            document.getElementById('dbStatusIcon').textContent = '🟢';
+            if (dbStatusIcon) dbStatusIcon.textContent = '🟢';
             dbConnFailureCount = 0;  // Reset failure counter on success
         }
     } catch (error) {
@@ -550,125 +753,137 @@ async function dbConnState() {
         dbConnFailureCount++;
         // Only show disconnected (red) after 3 consecutive failures
         if (dbConnFailureCount >= 3) {
-            document.getElementById('dbStatusIcon').textContent = '🔴';
+            if (dbStatusIcon) dbStatusIcon.textContent = '🔴';
         } else {
-            document.getElementById('dbStatusIcon').textContent = '🟡';  // Show yellow during transient failures
+            if (dbStatusIcon) dbStatusIcon.textContent = '🟡';  // Show yellow during transient failures
         }
     }
 }
 
 async function loadMessages() {
-    // Skip if not logged in
-    if (!mqbaseCredentials) {
-        return;
-    }
-    
-    // Save filter preferences to cookies
-    saveFilterPreferences();
-    
-    // Clear custom query field to indicate we're using filters now
-    document.getElementById('customQuery').value = '';
-    
-    const topicFilter = document.getElementById('topicFilter').value.trim();
-    const timeFilter = document.getElementById('timeFilter').value;
-    const limit = document.getElementById('limit').value;
-    
-    // Select only the essential columns: topic, payload, ulid (headers contains ulid)
-    let sql = `SELECT topic, payload, ulid FROM msg`;
-    
-    let whereConditions = [];
-    
-    // Add topic filter
-    if (topicFilter) {
-        if (topicFilter.includes('%')) {
-            whereConditions.push(`topic LIKE '${topicFilter}'`);
-        } else {
-            whereConditions.push(`topic = '${topicFilter}'`);
+    return preventDuplicateRequest('loadMessages', async () => {
+        // Skip if not logged in
+        if (!mqbaseCredentials) {
+            return;
         }
-    }
-    
-    // Add time filter using ULID prefix (ULIDs are lexicographically sortable by time)
-    if (timeFilter !== 'all') {
-        const days = parseInt(timeFilter);
-        const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
-        const cutoffPrefix = timestampToUlidPrefix(cutoffMs);
-        whereConditions.push(`ulid >= '${cutoffPrefix}'`);
-    }
-    
-    // Combine WHERE conditions with AND
-    if (whereConditions.length > 0) {
-        sql += ` WHERE ` + whereConditions.join(' AND ');
-    }
-    sql += ` ORDER BY ulid DESC LIMIT ${limit}`;
-
-    // Only show loading on first load or manual refresh (not during auto-refresh)
-    if (!lastQueryResult) {
-        showLoading();
-    }
-    
-    try {
-        const result = await executeSQL(sql);
         
-        // Compare with last result to avoid unnecessary updates
-        if (hasResultChanged(result)) {
-            displayResults(result);
-            lastQueryResult = result;
+        // Save filter preferences to cookies
+        saveFilterPreferences();
+        
+        // Clear custom query field to indicate we're using filters now
+        const customQueryEl = document.getElementById('customQuery');
+        if (customQueryEl) customQueryEl.value = '';
+        
+        const topicFilterEl = document.getElementById('topicFilter');
+        const topicFilter = topicFilterEl ? topicFilterEl.value.trim() : '';
+        const timeFilterEl = document.getElementById('timeFilter');
+        const timeFilter = timeFilterEl ? timeFilterEl.value : 'all';
+        const limitEl = document.getElementById('limit');
+        const limit = limitEl ? limitEl.value : '100';
+        
+        // Select only the essential columns: topic, payload, ulid (headers contains ulid)
+        let sql = `SELECT topic, payload, ulid FROM msg`;
+        
+        let whereConditions = [];
+        
+        // Add topic filter (escaped to prevent SQL injection)
+        if (topicFilter) {
+            const sanitizedTopic = escapeSql(topicFilter);
+            if (topicFilter.includes('%')) {
+                whereConditions.push(`topic LIKE '${sanitizedTopic}'`);
+            } else {
+                whereConditions.push(`topic = '${sanitizedTopic}'`);
+            }
         }
-    } catch (error) {
-        showMessage(`Error: ${error.message}`, 'error');
-        document.getElementById('results').innerHTML = '';
-        lastQueryResult = null;
-    }
+        
+        // Add time filter using ULID prefix (ULIDs are lexicographically sortable by time)
+        if (timeFilter !== 'all') {
+            const days = parseInt(timeFilter);
+            const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
+            const cutoffPrefix = timestampToUlidPrefix(cutoffMs);
+            whereConditions.push(`ulid >= '${cutoffPrefix}'`);
+        }
+        
+        // Combine WHERE conditions with AND
+        if (whereConditions.length > 0) {
+            sql += ` WHERE ` + whereConditions.join(' AND ');
+        }
+        sql += ` ORDER BY ulid DESC LIMIT ${limit}`;
+
+        // Only show loading on first load or manual refresh (not during auto-refresh)
+        if (!lastQueryResult) {
+            showLoading();
+        }
+        
+        try {
+            const result = await executeSQL(sql);
+            
+            // Compare with last result to avoid unnecessary updates
+            if (hasResultChanged(result)) {
+                displayResults(result);
+                lastQueryResult = result;
+            }
+        } catch (error) {
+            showMessage(`Error: ${error.message}`, 'error');
+            const resultsEl = document.getElementById('results');
+            if (resultsEl) resultsEl.innerHTML = '';
+            lastQueryResult = null;
+        }
+    });
 }
 
 async function executeCustomQuery() {
-    // Check if user is logged in
-    if (!mqbaseCredentials) {
-        showLoginModal();
-        return;
-    }
-    
-    let query = document.getElementById('customQuery').value.trim();
-    if (!query) {
-        showMessage('Please enter a SQL query', 'error');
-        return;
-    }
-
-    // Enforce maximum result limit to prevent browser memory issues
-    // Check if query already has a LIMIT clause
-    const hasLimit = /\bLIMIT\s+\d+/i.test(query);
-    let limitEnforced = false;
-    
-    if (!hasLimit) {
-        // Append LIMIT if not present
-        query = query.replace(/;\s*$/, '') + ` LIMIT ${MAX_DB_RESULTS}`;
-        limitEnforced = true;
-    } else {
-        // Check if existing limit exceeds MAX_DB_RESULTS
-        const limitMatch = query.match(/\bLIMIT\s+(\d+)/i);
-        if (limitMatch && parseInt(limitMatch[1]) > MAX_DB_RESULTS) {
-            query = query.replace(/\bLIMIT\s+\d+/i, `LIMIT ${MAX_DB_RESULTS}`);
-            limitEnforced = true;
+    return preventDuplicateRequest('executeCustomQuery', async () => {
+        // Check if user is logged in
+        if (!mqbaseCredentials) {
+            showLoginModal();
+            return;
         }
-    }
+        
+        const customQueryEl = document.getElementById('customQuery');
+        let query = customQueryEl ? customQueryEl.value.trim() : '';
+        if (!query) {
+            showMessage('Please enter a SQL query', 'error');
+            return;
+        }
 
-    // Turn off auto-refresh if it's currently enabled
-    if (isAutoRefreshEnabled) {
-        toggleAutoRefresh(true);
-    }
+        // Enforce maximum result limit to prevent browser memory issues
+        // Check if query already has a LIMIT clause
+        const hasLimit = /\bLIMIT\s+\d+/i.test(query);
+        let limitEnforced = false;
+        
+        if (!hasLimit) {
+            // Append LIMIT if not present
+            query = query.replace(/;\s*$/, '') + ` LIMIT ${MAX_DB_RESULTS}`;
+            limitEnforced = true;
+        } else {
+            // Check if existing limit exceeds MAX_DB_RESULTS
+            const limitMatch = query.match(/\bLIMIT\s+(\d+)/i);
+            if (limitMatch && parseInt(limitMatch[1]) > MAX_DB_RESULTS) {
+                query = query.replace(/\bLIMIT\s+\d+/i, `LIMIT ${MAX_DB_RESULTS}`);
+                limitEnforced = true;
+            }
+        }
 
-    // Reset last result since we're running a different query
-    lastQueryResult = null;
+        // Turn off auto-refresh if it's currently enabled
+        if (isAutoRefreshEnabled) {
+            toggleAutoRefresh(true);
+        }
 
-    showLoading();
-    
-    try {
-        const result = await executeSQL(query);
-        displayResults(result, limitEnforced);
-    } catch (error) {
-        showMessage(`Error: ${error.message}`, 'error');
-        document.getElementById('results').innerHTML = '';
-    }
+        // Reset last result since we're running a different query
+        lastQueryResult = null;
+
+        showLoading();
+        
+        try {
+            const result = await executeSQL(query);
+            displayResults(result, limitEnforced);
+        } catch (error) {
+            showMessage(`Error: ${error.message}`, 'error');
+            const resultsEl = document.getElementById('results');
+            if (resultsEl) resultsEl.innerHTML = '';
+        }
+    });
 }
 
 function hasResultChanged(newResult) {
@@ -782,15 +997,21 @@ function clearFilter() {
         return;
     }
     
-    document.getElementById('topicFilter').value = '';
-    document.getElementById('timeFilter').value = '7';
-    document.getElementById('customQuery').value = '';
+    const topicFilter = document.getElementById('topicFilter');
+    const timeFilter = document.getElementById('timeFilter');
+    const customQuery = document.getElementById('customQuery');
+    
+    if (topicFilter) topicFilter.value = '';
+    if (timeFilter) timeFilter.value = '7';
+    if (customQuery) customQuery.value = '';
     lastQueryResult = null; // Reset comparison cache
     loadMessages();
 }
 
 function toggleAutoRefresh(forceOff = false) {
     const checkbox = document.getElementById('autoRefreshCheckbox');
+    if (!checkbox) return;
+    
     if (forceOff) {
         checkbox.checked = false;
     }
@@ -1038,6 +1259,12 @@ function displayDefaultACL(defaultACL) {
 }
 
 async function toggleDefaultACL(aclType, allowed) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        loadBrokerConfig(); // Revert the toggle
+        return;
+    }
+    
     if (!mqttClient || !mqttClient.connected) {
         showMessage('MQTT not connected. Please connect first.', 'error');
         // Revert the toggle
@@ -1075,6 +1302,11 @@ async function toggleDefaultACL(aclType, allowed) {
 // =============================================================================
 
 function openCreateClientModal() {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     document.getElementById('clientModalTitle').textContent = 'Create Client';
     document.getElementById('clientEditMode').value = 'create';
     document.getElementById('clientUsername').value = '';
@@ -1090,6 +1322,11 @@ function openCreateClientModal() {
 }
 
 function openEditClientModal(username) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     // Find the client data from the table or fetch it
     const clientRow = Array.from(document.querySelectorAll('#clients-table tbody tr'))
         .find(row => row.querySelector('td').textContent === username);
@@ -1243,6 +1480,11 @@ async function updateClient(username, displayName, password, newRoles) {
 }
 
 function confirmDeleteClient(username) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     showConfirmModal(
         `Are you sure you want to delete client '${username}'?`,
         () => deleteClient(username)
@@ -1296,6 +1538,11 @@ function sendClientCommands(commands, successMessage) {
 let editingRoleAcls = [];
 
 function openCreateRoleModal() {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     document.getElementById('roleModalTitle').textContent = 'Create Role';
     document.getElementById('roleEditMode').value = 'create';
     document.getElementById('roleName').value = '';
@@ -1308,6 +1555,11 @@ function openCreateRoleModal() {
 }
 
 function openEditRoleModal(rolename) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     // Find the role data
     const roles = window.availableRoles || [];
     const role = roles.find(r => r.rolename === rolename);
@@ -1482,6 +1734,11 @@ async function updateRole(rolename, newAcls) {
 }
 
 function confirmDeleteRole(rolename) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
     showConfirmModal(
         `Are you sure you want to delete role '${rolename}'?`,
         () => deleteRole(rolename)
@@ -1712,7 +1969,7 @@ function publishMessage() {
     
     if (!mqttClient || !mqttClient.connected) {
         console.error('MQTT client not connected, cannot publish message');
-        alert('MQTT client not connected. Please wait for connection.');
+        showMessage('MQTT client not connected. Please wait for connection.', 'error');
         return;
     }
     
@@ -1727,19 +1984,20 @@ function publishMessage() {
     const qos = qosSelect ? parseInt(qosSelect.value) : 2;
     
     if (!topic) {
-        alert('Please enter a topic');
-        topicInput.focus();
+        showMessage('Please enter a topic', 'error');
+        if (topicInput) topicInput.focus();
         return;
     }
     
     mqttClient.publish(topic, message, { retain: retained, qos: qos }, (err) => {
         if (err) {
             console.error('Failed to publish message:', err);
-            alert('Failed to publish message: ' + err.message);
+            showMessage('Failed to publish message: ' + err.message, 'error');
         } else {
             console.log(`Published message to ${topic} (QoS: ${qos}, Retained: ${retained})`);
+            showMessage('Message published successfully', 'success');
             // Clear the message input but keep topic for convenience
-            messageInput.value = '';
+            if (messageInput) messageInput.value = '';
         }
     });
 }
@@ -1750,7 +2008,7 @@ function publishMessage() {
 function deleteRetainedMessage(topic, ulid) {
     if (!mqttClient || !mqttClient.connected) {
         console.error('MQTT client not connected, cannot delete retained message');
-        alert('MQTT client not connected. Please wait for connection.');
+        showMessage('MQTT client not connected. Please wait for connection.', 'error');
         return;
     }
     
@@ -1782,9 +2040,10 @@ function executeDeleteRetainedMessage(topic, ulid) {
     mqttClient.publish(topic, '', publishOptions, (err) => {
         if (err) {
             console.error('Failed to delete retained message:', err);
-            alert('Failed to delete retained message: ' + err.message);
+            showMessage('Failed to delete retained message: ' + err.message, 'error');
         } else {
             console.log('Deleted retained message from topic:', topic, ulid ? `(ulid: ${ulid})` : '(no ulid)');
+            showMessage('Retained message deleted', 'success');
             // Remove from local map and refresh display
             mqttMessagesMap.delete(topic);
             displayMqttMessages();
@@ -1937,6 +2196,8 @@ function clearMqttMessages() {
 
 function toggleSettingsMenu() {
     const menu = document.getElementById('settingsMenu');
+    if (!menu) return;
+    
     const isOpen = menu.classList.contains('active');
     
     if (isOpen) {
@@ -1952,6 +2213,8 @@ function toggleSettingsMenu() {
 
 function closeSettingsMenu() {
     const menu = document.getElementById('settingsMenu');
+    if (!menu) return;
+    
     menu.classList.remove('active');
     document.body.classList.remove('sidebar-open');
 }
@@ -2304,12 +2567,12 @@ async function loadAppConfig() {
 }
 
 // Initialize on page load
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
     // Load app configuration first
     loadAppConfig();
     
-    // Restore session from localStorage if valid
-    if (loadSession()) {
+    // Restore session from storage if valid (async due to crypto)
+    if (await loadSession()) {
         updateAuthMenuItem();
     }
     
