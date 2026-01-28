@@ -17,64 +17,6 @@
             <div class="settings-wrapper">
                 <button id="authButton" class="auth-btn" onclick="handleAuthButtonClick()" title="Login">Login</button>
                 <button class="settings-btn" onclick="toggleSettingsMenu()" title="Settings">☰</button>
-                <!-- Settings Dropdown Menu -->
-                <div id="settingsMenu" class="settings-menu">
-                    <div class="menu-item menu-item-row">
-                        <span>Theme</span>
-                        <div class="theme-toggle">
-                            <span id="themeLabelDark" class="theme-toggle-label active">Dark</span>
-                            <div id="themeSlider" class="theme-slider" onclick="toggleTheme()">
-                                <div class="theme-slider-knob"></div>
-                            </div>
-                            <span id="themeLabelLight" class="theme-toggle-label">Light</span>
-                        </div>
-                    </div>
-                    <div class="menu-item menu-item-row">
-                        <span>Font</span>
-                        <select id="fontSelect" onchange="selectFont(this.value)">
-                            <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
-                            <option value="'Fira Code', monospace">Fira Code</option>
-                            <option value="'Courier New', monospace">Courier New</option>
-                            <option value="'Segoe UI', sans-serif">Segoe UI</option>
-                            <option value="'Roboto', sans-serif">Roboto</option>
-                        </select>
-                    </div>
-                    <div class="menu-item menu-item-row">
-                        <span>Time Format</span>
-                        <select id="timeFormatSelect" onchange="selectTimeFormat(this.value)">
-                            <option value="full">YYYY-MM-DD</option>
-                            <option value="short">YY-MM-DD</option>
-                        </select>
-                    </div>
-                    <div class="menu-item menu-item-row">
-                        <span>QoS Column</span>
-                        <div class="column-toggle">
-                            <span id="qosLabelHide" class="toggle-label">Hide</span>
-                            <div id="qosSlider" class="toggle-slider" onclick="toggleQosColumn()">
-                                <div class="toggle-slider-knob"></div>
-                            </div>
-                            <span id="qosLabelShow" class="toggle-label active">Show</span>
-                        </div>
-                    </div>
-                    <div class="menu-item menu-item-row">
-                        <span>Retained Column</span>
-                        <div class="column-toggle">
-                            <span id="retainedLabelHide" class="toggle-label">Hide</span>
-                            <div id="retainedSlider" class="toggle-slider" onclick="toggleRetainedColumn()">
-                                <div class="toggle-slider-knob"></div>
-                            </div>
-                            <span id="retainedLabelShow" class="toggle-label active">Show</span>
-                        </div>
-                    </div>
-                    <div class="menu-separator"></div>
-                    <div id="authMenuItem" class="menu-item" onclick="handleAuthMenuClick()">
-                        Login
-                    </div>
-                    <div class="menu-separator"></div>
-                    <div class="menu-item" onclick="openAboutModal()">
-                        About
-                    </div>
-                </div>
             </div>
         </header>
 
@@ -155,6 +97,9 @@
                 </div>
             </div>
         </div>
+        <!-- Main Layout: Content + Sidebar -->
+        <div class="main-layout">
+            <div class="main-content">
         <div class="tabs">
             <button class="tab active" onclick="switchTab('database')"><span id="dbStatusIcon" class="tab-status">⚫</span> Database</button>
             <button class="tab" onclick="switchTab('broker')"><span id="mqttStatusIcon" class="tab-status">⚫</span> Broker</button>
@@ -342,6 +287,70 @@
         </div>
     </div>
 </div>
+            </div> <!-- end main-content -->
+            <!-- Settings Sidebar -->
+            <div id="settingsMenu" class="settings-sidebar">
+                <div class="sidebar-header">
+                    <span>Settings</span>
+                    <button class="sidebar-close" onclick="closeSettingsMenu()" title="Collapse">»</button>
+                </div>
+                <div class="menu-item menu-item-row">
+                    <span>Theme</span>
+                    <div class="theme-toggle">
+                        <span id="themeLabelDark" class="theme-toggle-label active">Dark</span>
+                        <div id="themeSlider" class="theme-slider" onclick="toggleTheme()">
+                            <div class="theme-slider-knob"></div>
+                        </div>
+                        <span id="themeLabelLight" class="theme-toggle-label">Light</span>
+                    </div>
+                </div>
+                <div class="menu-item menu-item-row">
+                    <span>Font</span>
+                    <select id="fontSelect" onchange="selectFont(this.value)">
+                        <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
+                        <option value="'Fira Code', monospace">Fira Code</option>
+                        <option value="'Courier New', monospace">Courier New</option>
+                        <option value="'Segoe UI', sans-serif">Segoe UI</option>
+                        <option value="'Roboto', sans-serif">Roboto</option>
+                    </select>
+                </div>
+                <div class="menu-item menu-item-row">
+                    <span>Time Format</span>
+                    <select id="timeFormatSelect" onchange="selectTimeFormat(this.value)">
+                        <option value="full">YYYY-MM-DD</option>
+                        <option value="short">YY-MM-DD</option>
+                    </select>
+                </div>
+                <div class="menu-item menu-item-row">
+                    <span>QoS Column</span>
+                    <div class="column-toggle">
+                        <span id="qosLabelHide" class="toggle-label">Hide</span>
+                        <div id="qosSlider" class="toggle-slider" onclick="toggleQosColumn()">
+                            <div class="toggle-slider-knob"></div>
+                        </div>
+                        <span id="qosLabelShow" class="toggle-label active">Show</span>
+                    </div>
+                </div>
+                <div class="menu-item menu-item-row">
+                    <span>Retained Column</span>
+                    <div class="column-toggle">
+                        <span id="retainedLabelHide" class="toggle-label">Hide</span>
+                        <div id="retainedSlider" class="toggle-slider" onclick="toggleRetainedColumn()">
+                            <div class="toggle-slider-knob"></div>
+                        </div>
+                        <span id="retainedLabelShow" class="toggle-label active">Show</span>
+                    </div>
+                </div>
+                <div class="menu-separator"></div>
+                <div id="authMenuItem" class="menu-item" onclick="handleAuthMenuClick()">
+                    Login
+                </div>
+                <div class="menu-separator"></div>
+                <div class="menu-item" onclick="openAboutModal()">
+                    About
+                </div>
+            </div>
+        </div> <!-- end main-layout -->
 
 <!-- Client Modal (Create/Edit) -->
 <div id="clientModal" class="modal-overlay" onclick="closeClientModalOnOverlay(event)">

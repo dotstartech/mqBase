@@ -1946,26 +1946,14 @@ function toggleSettingsMenu() {
         updateFontSelect();
         updateTimeFormatSelect();
         menu.classList.add('active');
-        
-        // Close menu when clicking outside
-        setTimeout(() => {
-            document.addEventListener('click', closeSettingsMenuOnClickOutside);
-        }, 0);
+        document.body.classList.add('sidebar-open');
     }
 }
 
 function closeSettingsMenu() {
     const menu = document.getElementById('settingsMenu');
     menu.classList.remove('active');
-    document.removeEventListener('click', closeSettingsMenuOnClickOutside);
-}
-
-function closeSettingsMenuOnClickOutside(event) {
-    const menu = document.getElementById('settingsMenu');
-    const btn = document.querySelector('.settings-btn');
-    if (!menu.contains(event.target) && !btn.contains(event.target)) {
-        closeSettingsMenu();
-    }
+    document.body.classList.remove('sidebar-open');
 }
 
 function updateFontSelect() {
@@ -2357,6 +2345,12 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function setupEventListeners() {
+    // Sidebar close button
+    const sidebarClose = document.querySelector('.sidebar-close');
+    if (sidebarClose) {
+        sidebarClose.addEventListener('click', closeSettingsMenu);
+    }
+    
     // Allow Enter key in topic filter - handles Database tab
     const topicFilter = document.getElementById('topicFilter');
     if (topicFilter) {
@@ -2391,10 +2385,11 @@ function setupEventListeners() {
     
     // Global keyboard shortcuts
     document.addEventListener('keydown', (e) => {
-        // Escape - close modals and clear filters
+        // Escape - close modals, sidebar, and clear filters
         if (e.key === 'Escape') {
             closeAboutModal();
             closeConfirmModal();
+            closeSettingsMenu();
             return;
         }
         
