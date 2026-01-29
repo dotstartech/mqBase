@@ -1,5 +1,5 @@
 ---
-description: Welcome to your team’s developer platform
+description: Welcome to your mqBase - MQTT, SQL and web admin in one place
 layout:
   width: wide
   title:
@@ -19,7 +19,7 @@ metaLinks:
     - https://app.gitbook.com/s/2AwfWOGBWBxQmyvHedqW/
 ---
 
-# Developer Platform
+# mqBase
 
 <h2 align="center">mqBase</h2>
 

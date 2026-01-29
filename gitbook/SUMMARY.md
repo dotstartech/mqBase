@@ -1,6 +1,6 @@
 # Table of contents
 
-* [Developer Platform](README.md)
+* [mqBase](README.md)
 
 ## Self-hosted
 
