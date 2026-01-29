@@ -647,8 +647,9 @@ function performLogout() {
     
     // Clear broker tab data and disconnect MQTT
     mqttMessagesMap.clear();
-    if (mqttClient && mqttClient.connected) {
-        mqttClient.end();
+    if (mqttClient) {
+        mqttClient.end(true);  // Force close even if still connecting
+        mqttClient = null;
     }
     window.mqttConnected = false;
     updateMqttStatus('Disconnected', '⚫', 'var(--ctp-overlay0)');
@@ -2164,6 +2165,14 @@ async function initMqttConnection() {
         console.log('MQTT already connected');
         return;
     }
+    
+    // If client exists but not connected (e.g., still connecting or reconnecting),
+    // end it first to avoid zombie connections
+    if (mqttClient) {
+        console.log('Cleaning up existing MQTT client');
+        mqttClient.end(true);  // Force close
+        mqttClient = null;
+    }
 
     // WebSocket URL - use wss:// for HTTPS, ws:// for HTTP
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2203,6 +2212,7 @@ async function initMqttConnection() {
             username: username,
             password: password,
             clean: true,
+            connectTimeout: 5000,   // 5 second timeout for initial connection
             reconnectPeriod: 3000,
             protocolVersion: 5,  // MQTT v5 for retain-as-published support
         });
