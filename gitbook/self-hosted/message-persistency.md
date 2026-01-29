@@ -165,8 +165,8 @@ client.publish('sensors/temperature', '', retain=True, properties=props)
 
 | Scenario | Approach |
 | -------- | -------- |
-| Clear current sensor reading | Delete by topic (no ULID) |
-| Undo a specific erroneous publish | Delete by ULID |
+| Clear the latest sensor reading | Delete by topic (slow SQL query since without ULID the latest stored event has to be found first before deletion) |
+| Undo the latest publish by ULID | Delete by ULID (faster SQL query execution) |
 | Clean up old retained messages | Query database, delete by ULIDs |
 | Bulk cleanup | Use data retention (`plugin_opt_retention_days`) |
 
