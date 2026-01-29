@@ -1,12 +1,10 @@
-# Docker Compose configuration (default, no Swarm required)
+# Docker Compose configuration
 # Usage: docker compose up -d
 #
 # Credentials can be provided via:
 #   1. Environment variables (shown below)
 #   2. Mounted secrets file (secrets.conf)
 #   3. Auto-generated (printed to logs on first run)
-#
-# For Docker Swarm deployments, use compose.swarm.yml instead.
 
 services:
   mqbase:

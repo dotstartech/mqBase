@@ -185,9 +185,6 @@ RUN mkdir -p /build/final-libs-amd64/lib64 /build/final-libs-amd64/lib/x86_64-li
                  && echo "arm64" > /build/target_arch ;; \
     esac
 
-# ============================================================================
-# Final stage: Google Distroless (Debian 13 Trixie to match builder)
-# ============================================================================
 FROM gcr.io/distroless/base-debian13
 
 LABEL maintainer="dotStar Technologies" \

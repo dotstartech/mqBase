@@ -1,4 +1,4 @@
-# Docker Swarm configuration (for production deployments)
+# Docker Swarm configuration
 # Usage:
 #   docker secret create mqbase.secrets mqbase.secrets
 #   docker stack deploy -c compose.swarm.yml mqbase
@@ -6,8 +6,6 @@
 # Credentials are provided via Docker Swarm secrets (most secure):
 #   - Create mqbase.secrets file with MQBASE_USER and MQBASE_MQTT_USER
 #   - Register as a Docker secret before deploying
-#
-# Features overlay networking for multi-node Swarm clusters.
 
 services:
   mqbase:
