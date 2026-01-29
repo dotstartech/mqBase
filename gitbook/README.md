@@ -19,9 +19,7 @@ metaLinks: {}
 
 # mqBase
 
-<h2 align="center"><mark style="color:$primary;">mqBase</mark></h2>
-
-<h4 align="center"><mark style="color:$tint;">MQTT, SQL and web admin in one place</mark></h4>
+<h2 align="center"><mark style="color:$primary;">mqBase -</mark> <mark style="color:$tint;">MQTT, SQL and web admin in one place</mark></h2>
 
 <figure><img src=".gitbook/assets/mqbase-admin.png" alt=""><figcaption></figcaption></figure>
 
