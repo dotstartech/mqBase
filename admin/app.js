@@ -664,6 +664,10 @@ function performLogout() {
     if (clientsTbody) {
         clientsTbody.innerHTML = '';
     }
+    const groupsTbody = document.querySelector('#groups-table tbody');
+    if (groupsTbody) {
+        groupsTbody.innerHTML = '';
+    }
     const rolesTbody = document.querySelector('#roles-table tbody');
     if (rolesTbody) {
         rolesTbody.innerHTML = '';
@@ -673,6 +677,8 @@ function performLogout() {
         defaultAcl.innerHTML = '';
     }
     window.aclDataLoaded = false;
+    window.availableClients = [];
+    window.availableGroups = [];
     window.availableRoles = [];
     
     // Stop auto-refresh if running
@@ -1144,10 +1150,13 @@ async function loadBrokerConfig() {
         
         displayBrokerSummary(config);
         displayClients(config.clients || []);
+        displayGroups(config.groups || []);
         displayRoles(config.roles || []);
         displayDefaultACL(config.defaultACLAccess || {});
         
-        // Store roles globally for client modal
+        // Store clients, groups, and roles globally for modals
+        window.availableClients = config.clients || [];
+        window.availableGroups = config.groups || [];
         window.availableRoles = config.roles || [];
         
         // Ensure MQTT is connected when ACL data loads successfully
@@ -1171,15 +1180,17 @@ function displayClients(clients) {
     tbody.innerHTML = '';
     
     clients.forEach(client => {
+        const groups = (client.groups || []).map(g => g.groupname).join(', ');
         const roles = (client.roles || []).map(r => r.rolename).join(', ');
         const displayName = client.textname || '-';
         const escapedUsername = client.username.replace(/'/g, "\\'");
         
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td class="topic">${client.username}</td>
-            <td>${displayName}</td>
-            <td class="payload">${roles || '-'}</td>
+            <td class="topic">${escapeHtml(client.username)}</td>
+            <td>${escapeHtml(displayName)}</td>
+            <td class="payload">${escapeHtml(groups) || '-'}</td>
+            <td class="payload">${escapeHtml(roles) || '-'}</td>
             <td class="actions">
                 <button class="icon-btn edit-btn" onclick="openEditClientModal('${escapedUsername}')" title="Edit client">✏️</button>
                 <button class="icon-btn delete-btn" onclick="confirmDeleteClient('${escapedUsername}')" title="Delete client">🗑️</button>
@@ -1317,6 +1328,7 @@ function openCreateClientModal() {
     document.getElementById('clientPasswordHint').textContent = 'Required for new client';
     document.getElementById('clientSubmitBtn').textContent = 'Create';
     
+    populateClientGroupsCheckboxes([]);
     populateRolesCheckboxes([]);
     document.getElementById('clientModal').classList.add('active');
 }
@@ -1341,6 +1353,11 @@ function openEditClientModal(username) {
     const rolesText = cells[2].textContent === '-' ? '' : cells[2].textContent;
     const clientRoles = rolesText ? rolesText.split(', ').map(r => r.trim()) : [];
     
+    // Get client's groups from availableClients data
+    const clients = window.availableClients || [];
+    const clientData = clients.find(c => c.username === username);
+    const clientGroups = clientData && clientData.groups ? clientData.groups.map(g => g.groupname) : [];
+    
     document.getElementById('clientModalTitle').textContent = 'Edit Client';
     document.getElementById('clientEditMode').value = username;
     document.getElementById('clientUsername').value = username;
@@ -1351,8 +1368,29 @@ function openEditClientModal(username) {
     document.getElementById('clientPasswordHint').textContent = 'Leave blank to keep current password';
     document.getElementById('clientSubmitBtn').textContent = 'Save';
     
+    populateClientGroupsCheckboxes(clientGroups);
     populateRolesCheckboxes(clientRoles);
     document.getElementById('clientModal').classList.add('active');
+}
+
+function populateClientGroupsCheckboxes(selectedGroups) {
+    const container = document.getElementById('clientGroupsCheckboxes');
+    const groups = window.availableGroups || [];
+    
+    if (groups.length === 0) {
+        container.innerHTML = '<span class="no-roles">No groups available</span>';
+        return;
+    }
+    
+    container.innerHTML = groups.map(group => {
+        const checked = selectedGroups.includes(group.groupname) ? 'checked' : '';
+        return `
+            <label class="modal-checkbox-label">
+                <input type="checkbox" name="clientGroups" value="${escapeHtml(group.groupname)}" ${checked}>
+                <span>${escapeHtml(group.groupname)}</span>
+            </label>
+        `;
+    }).join('');
 }
 
 function populateRolesCheckboxes(selectedRoles) {
@@ -1398,17 +1436,19 @@ async function handleClientSubmit(event) {
     const displayName = document.getElementById('clientDisplayName').value.trim();
     const password = document.getElementById('clientPassword').value;
     
+    const selectedGroups = Array.from(document.querySelectorAll('input[name="clientGroups"]:checked'))
+        .map(cb => cb.value);
     const selectedRoles = Array.from(document.querySelectorAll('input[name="clientRoles"]:checked'))
         .map(cb => cb.value);
     
     if (editMode === 'create') {
-        await createClient(username, displayName, password, selectedRoles);
+        await createClient(username, displayName, password, selectedGroups, selectedRoles);
     } else {
-        await updateClient(editMode, displayName, password, selectedRoles);
+        await updateClient(editMode, displayName, password, selectedGroups, selectedRoles);
     }
 }
 
-async function createClient(username, displayName, password, roles) {
+async function createClient(username, displayName, password, groups, roles) {
     const commands = [];
     
     // Create client command
@@ -1422,6 +1462,15 @@ async function createClient(username, displayName, password, roles) {
     }
     commands.push(createCmd);
     
+    // Add client to groups
+    groups.forEach(groupname => {
+        commands.push({
+            command: 'addGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
+    
     // Add role assignments
     roles.forEach(rolename => {
         commands.push({
@@ -1434,7 +1483,7 @@ async function createClient(username, displayName, password, roles) {
     sendClientCommands(commands, `Client '${username}' created successfully`);
 }
 
-async function updateClient(username, displayName, password, newRoles) {
+async function updateClient(username, displayName, password, newGroups, newRoles) {
     const commands = [];
     
     // Modify client command for textname and password
@@ -1449,6 +1498,31 @@ async function updateClient(username, displayName, password, newRoles) {
         modifyCmd.password = password;
     }
     commands.push(modifyCmd);
+    
+    // Get current groups from availableClients data
+    const clients = window.availableClients || [];
+    const clientData = clients.find(c => c.username === username);
+    const currentGroups = clientData && clientData.groups ? clientData.groups.map(g => g.groupname) : [];
+    
+    // Calculate groups to add and remove
+    const groupsToAdd = newGroups.filter(g => !currentGroups.includes(g));
+    const groupsToRemove = currentGroups.filter(g => !newGroups.includes(g));
+    
+    groupsToAdd.forEach(groupname => {
+        commands.push({
+            command: 'addGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
+    
+    groupsToRemove.forEach(groupname => {
+        commands.push({
+            command: 'removeGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
     
     // Get current roles from the table
     const clientRow = Array.from(document.querySelectorAll('#clients-table tbody tr'))
@@ -1779,6 +1853,303 @@ function sendRoleCommands(commands, successMessage) {
         } else {
             showMessage(successMessage, 'success');
             closeRoleModal();
+            setTimeout(() => loadBrokerConfig(), 500);
+        }
+    });
+}
+
+// =============================================================================
+// Group CRUD Functions
+// =============================================================================
+
+function displayGroups(groups) {
+    const tbody = document.querySelector('#groups-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    
+    groups.forEach(group => {
+        const clients = (group.clients || []).map(c => c.username).join(', ');
+        const roles = (group.roles || []).map(r => r.rolename).join(', ');
+        const escapedGroupname = group.groupname.replace(/'/g, "\\'");
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="topic">${escapeHtml(group.groupname)}</td>
+            <td class="payload">${escapeHtml(clients) || '-'}</td>
+            <td class="payload">${escapeHtml(roles) || '-'}</td>
+            <td class="actions">
+                <button class="icon-btn edit-btn" onclick="openEditGroupModal('${escapedGroupname}')" title="Edit group">✏️</button>
+                <button class="icon-btn delete-btn" onclick="confirmDeleteGroup('${escapedGroupname}')" title="Delete group">🗑️</button>
+            </td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function openCreateGroupModal() {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
+    document.getElementById('groupModalTitle').textContent = 'Create Group';
+    document.getElementById('groupEditMode').value = 'create';
+    document.getElementById('groupName').value = '';
+    document.getElementById('groupName').disabled = false;
+    document.getElementById('groupDisplayName').value = '';
+    document.getElementById('groupSubmitBtn').textContent = 'Create';
+    
+    populateGroupClientsCheckboxes([]);
+    populateGroupRolesCheckboxes([]);
+    document.getElementById('groupModal').classList.add('active');
+}
+
+function openEditGroupModal(groupname) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
+    // Find the group data
+    const groups = window.availableGroups || [];
+    const group = groups.find(g => g.groupname === groupname);
+    
+    if (!group) {
+        showMessage('Group not found', 'error');
+        return;
+    }
+    
+    document.getElementById('groupModalTitle').textContent = 'Edit Group';
+    document.getElementById('groupEditMode').value = groupname;
+    document.getElementById('groupName').value = groupname;
+    document.getElementById('groupName').disabled = true;
+    document.getElementById('groupDisplayName').value = group.textname || '';
+    document.getElementById('groupSubmitBtn').textContent = 'Save';
+    
+    const groupClients = (group.clients || []).map(c => c.username);
+    const groupRoles = (group.roles || []).map(r => r.rolename);
+    
+    populateGroupClientsCheckboxes(groupClients);
+    populateGroupRolesCheckboxes(groupRoles);
+    document.getElementById('groupModal').classList.add('active');
+}
+
+function populateGroupClientsCheckboxes(selectedClients) {
+    const container = document.getElementById('groupClientsCheckboxes');
+    const clients = window.availableClients || [];
+    
+    if (clients.length === 0) {
+        container.innerHTML = '<span class="no-roles">No clients available</span>';
+        return;
+    }
+    
+    container.innerHTML = clients.map(client => {
+        const checked = selectedClients.includes(client.username) ? 'checked' : '';
+        return `
+            <label class="modal-checkbox-label">
+                <input type="checkbox" name="groupClients" value="${escapeHtml(client.username)}" ${checked}>
+                <span>${escapeHtml(client.username)}</span>
+            </label>
+        `;
+    }).join('');
+}
+
+function populateGroupRolesCheckboxes(selectedRoles) {
+    const container = document.getElementById('groupRolesCheckboxes');
+    const roles = window.availableRoles || [];
+    
+    if (roles.length === 0) {
+        container.innerHTML = '<span class="no-roles">No roles available</span>';
+        return;
+    }
+    
+    container.innerHTML = roles.map(role => {
+        const checked = selectedRoles.includes(role.rolename) ? 'checked' : '';
+        return `
+            <label class="modal-checkbox-label">
+                <input type="checkbox" name="groupRoles" value="${escapeHtml(role.rolename)}" ${checked}>
+                <span>${escapeHtml(role.rolename)}</span>
+            </label>
+        `;
+    }).join('');
+}
+
+function closeGroupModal() {
+    document.getElementById('groupModal').classList.remove('active');
+}
+
+function closeGroupModalOnOverlay(event) {
+    if (event.target.id === 'groupModal') {
+        closeGroupModal();
+    }
+}
+
+async function handleGroupSubmit(event) {
+    event.preventDefault();
+    
+    if (!mqttClient || !mqttClient.connected) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
+    
+    const editMode = document.getElementById('groupEditMode').value;
+    const groupname = document.getElementById('groupName').value.trim();
+    const displayName = document.getElementById('groupDisplayName').value.trim();
+    
+    const selectedClients = Array.from(document.querySelectorAll('input[name="groupClients"]:checked'))
+        .map(cb => cb.value);
+    const selectedRoles = Array.from(document.querySelectorAll('input[name="groupRoles"]:checked'))
+        .map(cb => cb.value);
+    
+    if (editMode === 'create') {
+        await createGroup(groupname, displayName, selectedClients, selectedRoles);
+    } else {
+        await updateGroup(editMode, displayName, selectedClients, selectedRoles);
+    }
+}
+
+async function createGroup(groupname, displayName, clients, roles) {
+    const commands = [];
+    
+    // Create group command
+    const createCmd = {
+        command: 'createGroup',
+        groupname: groupname
+    };
+    if (displayName) {
+        createCmd.textname = displayName;
+    }
+    commands.push(createCmd);
+    
+    // Add clients to group
+    clients.forEach(username => {
+        commands.push({
+            command: 'addGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
+    
+    // Add roles to group
+    roles.forEach(rolename => {
+        commands.push({
+            command: 'addGroupRole',
+            groupname: groupname,
+            rolename: rolename
+        });
+    });
+    
+    sendGroupCommands(commands, `Group '${groupname}' created successfully`);
+}
+
+async function updateGroup(groupname, displayName, newClients, newRoles) {
+    const commands = [];
+    
+    // Modify group command for textname
+    const modifyCmd = {
+        command: 'modifyGroup',
+        groupname: groupname
+    };
+    if (displayName !== undefined) {
+        modifyCmd.textname = displayName || '';
+    }
+    commands.push(modifyCmd);
+    
+    // Get current group data
+    const groups = window.availableGroups || [];
+    const group = groups.find(g => g.groupname === groupname);
+    const currentClients = group ? (group.clients || []).map(c => c.username) : [];
+    const currentRoles = group ? (group.roles || []).map(r => r.rolename) : [];
+    
+    // Calculate clients to add and remove
+    const clientsToAdd = newClients.filter(c => !currentClients.includes(c));
+    const clientsToRemove = currentClients.filter(c => !newClients.includes(c));
+    
+    clientsToAdd.forEach(username => {
+        commands.push({
+            command: 'addGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
+    
+    clientsToRemove.forEach(username => {
+        commands.push({
+            command: 'removeGroupClient',
+            groupname: groupname,
+            username: username
+        });
+    });
+    
+    // Calculate roles to add and remove
+    const rolesToAdd = newRoles.filter(r => !currentRoles.includes(r));
+    const rolesToRemove = currentRoles.filter(r => !newRoles.includes(r));
+    
+    rolesToAdd.forEach(rolename => {
+        commands.push({
+            command: 'addGroupRole',
+            groupname: groupname,
+            rolename: rolename
+        });
+    });
+    
+    rolesToRemove.forEach(rolename => {
+        commands.push({
+            command: 'removeGroupRole',
+            groupname: groupname,
+            rolename: rolename
+        });
+    });
+    
+    sendGroupCommands(commands, `Group '${groupname}' updated successfully`);
+}
+
+function confirmDeleteGroup(groupname) {
+    if (!mqbaseCredentials) {
+        showLoginModal();
+        return;
+    }
+    
+    showConfirmModal(
+        `Are you sure you want to delete group '${groupname}'?`,
+        () => deleteGroup(groupname)
+    );
+}
+
+async function deleteGroup(groupname) {
+    if (!mqttClient || !mqttClient.connected) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
+    
+    const command = {
+        commands: [{
+            command: 'deleteGroup',
+            groupname: groupname
+        }]
+    };
+    
+    const topic = '$CONTROL/dynamic-security/v1';
+    mqttClient.publish(topic, JSON.stringify(command), { qos: 1 }, (err) => {
+        if (err) {
+            showMessage(`Failed to delete group: ${err.message}`, 'error');
+        } else {
+            showMessage(`Group '${groupname}' deleted successfully`, 'success');
+            setTimeout(() => loadBrokerConfig(), 500);
+        }
+    });
+}
+
+function sendGroupCommands(commands, successMessage) {
+    const topic = '$CONTROL/dynamic-security/v1';
+    const message = JSON.stringify({ commands });
+    
+    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
+        if (err) {
+            showMessage(`Operation failed: ${err.message}`, 'error');
+        } else {
+            showMessage(successMessage, 'success');
+            closeGroupModal();
             setTimeout(() => loadBrokerConfig(), 500);
         }
     });

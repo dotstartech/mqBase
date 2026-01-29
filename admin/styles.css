@@ -654,14 +654,19 @@ td:first-child {
     margin-bottom: 0;
 }
 
-/* Clients table - 37.5% width (decreased by 25% from 50%) */
-.acl-tables-row .acl-table-section:first-child {
-    flex: 3;
+/* Clients table - 25% width */
+.acl-tables-row .acl-table-section:nth-child(1) {
+    flex: 2;
 }
 
-/* Roles & ACLs table - 62.5% width (increased by 25% from 50%) */
-.acl-tables-row .acl-table-section:last-child {
-    flex: 5;
+/* Groups table - 30% width */
+.acl-tables-row .acl-table-section:nth-child(2) {
+    flex: 2.5;
+}
+
+/* Roles & ACLs table - 45% width */
+.acl-tables-row .acl-table-section:nth-child(3) {
+    flex: 3.5;
 }
 
 .acl-tables-row .acl-table-section h3 {

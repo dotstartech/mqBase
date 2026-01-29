@@ -8,6 +8,7 @@
 	"clients":	[{
 			"username":	"admin",
 			"textname":	"Admin user",
+			"textdescription":	"Full system administrator with access to all topics and dynsec control",
 			"roles":	[{
 					"rolename":	"admin"
 				}],
@@ -17,6 +18,7 @@
 		}, {
 			"username":	"guest",
 			"textname":	"Guest",
+			"textdescription":	"Read-only access to public data topics",
 			"roles":	[{
 					"rolename":	"guest"
 				}],
@@ -26,16 +28,117 @@
 		}, {
 			"username":	"test",
 			"textname":	"Test user",
+			"textdescription":	"Developer testing account",
 			"roles":	[{
 					"rolename":	"test"
 				}],
 			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
 			"salt":	"44X4aE1jpXETPNNq",
 			"iterations":	101
+		}, {
+			"username":	"sensor-temp-001",
+			"textname":	"Temperature Sensor #001",
+			"textdescription":	"Warehouse Zone A temperature sensor",
+			"groups":	[{
+					"groupname":	"temperature-sensors",
+					"priority":	1
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
+		}, {
+			"username":	"sensor-temp-002",
+			"textname":	"Temperature Sensor #002",
+			"textdescription":	"Warehouse Zone B temperature sensor",
+			"groups":	[{
+					"groupname":	"temperature-sensors",
+					"priority":	1
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
+		}, {
+			"username":	"sensor-humidity-001",
+			"textname":	"Humidity Sensor #001",
+			"textdescription":	"Warehouse humidity sensor",
+			"groups":	[{
+					"groupname":	"humidity-sensors",
+					"priority":	1
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
+		}, {
+			"username":	"dashboard-app",
+			"textname":	"Dashboard Application",
+			"textdescription":	"Web dashboard that displays all sensor data",
+			"groups":	[{
+					"groupname":	"monitoring-apps",
+					"priority":	1
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
+		}, {
+			"username":	"alerting-service",
+			"textname":	"Alerting Service",
+			"textdescription":	"Backend service that monitors thresholds and sends alerts",
+			"groups":	[{
+					"groupname":	"monitoring-apps",
+					"priority":	1
+				}, {
+					"groupname":	"alerting-services",
+					"priority":	2
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
 		}],
-	"groups":	[],
+	"groups":	[{
+			"groupname":	"temperature-sensors",
+			"textname":	"Temperature Sensors",
+			"textdescription":	"All temperature monitoring devices. Members can publish to sensors/temperature/# and receive commands.",
+			"roles":	[{
+					"rolename":	"sensor-publish-temperature",
+					"priority":	1
+				}, {
+					"rolename":	"sensor-receive-commands",
+					"priority":	2
+				}]
+		}, {
+			"groupname":	"humidity-sensors",
+			"textname":	"Humidity Sensors",
+			"textdescription":	"All humidity monitoring devices. Members can publish to sensors/humidity/# and receive commands.",
+			"roles":	[{
+					"rolename":	"sensor-publish-humidity",
+					"priority":	1
+				}, {
+					"rolename":	"sensor-receive-commands",
+					"priority":	2
+				}]
+		}, {
+			"groupname":	"monitoring-apps",
+			"textname":	"Monitoring Applications",
+			"textdescription":	"Applications that need read access to all sensor data. Cannot publish sensor data.",
+			"roles":	[{
+					"rolename":	"subscribe-all-sensors",
+					"priority":	1
+				}]
+		}, {
+			"groupname":	"alerting-services",
+			"textname":	"Alerting Services",
+			"textdescription":	"Backend services that can publish alerts and commands to devices.",
+			"roles":	[{
+					"rolename":	"publish-alerts",
+					"priority":	1
+				}, {
+					"rolename":	"publish-device-commands",
+					"priority":	2
+				}]
+		}],
 	"roles":	[{
 			"rolename":	"admin",
+			"textdescription":	"Full administrative access to all topics including $CONTROL and $SYS",
 			"acls":	[{
 					"acltype":	"publishClientSend",
 					"topic":	"#",
@@ -84,6 +187,7 @@
 				}]
 		}, {
 			"rolename":	"guest",
+			"textdescription":	"Read-only access to public data topics for demos and testing",
 			"acls":	[{
 					"acltype":	"subscribePattern",
 					"topic":	"data/test/#",
@@ -102,6 +206,7 @@
 				}]
 		}, {
 			"rolename":	"test",
+			"textdescription":	"Developer testing role for test namespace",
 			"acls":	[{
 					"acltype":	"publishClientSend",
 					"topic":	"+/test/#",
@@ -115,6 +220,70 @@
 				}, {
 					"acltype":	"unsubscribePattern",
 					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"sensor-publish-temperature",
+			"textdescription":	"Allows publishing temperature readings to sensors/temperature/+",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"sensors/temperature/+",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"sensor-publish-humidity",
+			"textdescription":	"Allows publishing humidity readings to sensors/humidity/+",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"sensors/humidity/+",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"sensor-receive-commands",
+			"textdescription":	"Allows sensors to receive configuration and control commands",
+			"acls":	[{
+					"acltype":	"subscribePattern",
+					"topic":	"commands/+",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"commands/#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"subscribe-all-sensors",
+			"textdescription":	"Read-only access to all sensor data streams",
+			"acls":	[{
+					"acltype":	"subscribePattern",
+					"topic":	"sensors/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"sensors/#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"publish-alerts",
+			"textdescription":	"Allows publishing alert notifications",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"alerts/#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"publish-device-commands",
+			"textdescription":	"Allows sending commands to devices",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"commands/+",
 					"priority":	0,
 					"allow":	true
 				}]

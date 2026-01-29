@@ -186,6 +186,23 @@
                                 <tr>
                                     <th>Username</th>
                                     <th>Display Name</th>
+                                    <th>Groups</th>
+                                    <th>Roles</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="broker-section acl-table-section">
+                    <h3>Groups <button class="icon-btn create-btn" onclick="openCreateGroupModal()" title="Create group">+</button></h3>
+                    <div class="broker-content">
+                        <table class="acl-table" id="groups-table">
+                            <thead>
+                                <tr>
+                                    <th>Group Name</th>
+                                    <th>Clients</th>
                                     <th>Roles</th>
                                     <th>Actions</th>
                                 </tr>
@@ -382,6 +399,10 @@
                     <small id="clientPasswordHint" class="form-hint"></small>
                 </div>
                 <div class="form-group">
+                    <label>Groups</label>
+                    <div id="clientGroupsCheckboxes" class="modal-checkbox-group"></div>
+                </div>
+                <div class="form-group">
                     <label>Roles</label>
                     <div id="clientRolesCheckboxes" class="modal-checkbox-group"></div>
                 </div>
@@ -427,6 +448,41 @@
                 <div class="modal-buttons">
                     <button type="button" class="modal-btn modal-btn-cancel" onclick="closeRoleModal()">Cancel</button>
                     <button type="submit" class="modal-btn modal-btn-submit" id="roleSubmitBtn">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Group Modal (Create/Edit) -->
+<div id="groupModal" class="modal-overlay" onclick="closeGroupModalOnOverlay(event)">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="groupModalTitle">Create Group</h2>
+            <button class="modal-close" onclick="closeGroupModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <form id="groupForm" onsubmit="handleGroupSubmit(event)">
+                <input type="hidden" id="groupEditMode" value="create">
+                <div class="form-group">
+                    <label for="groupName">Group Name</label>
+                    <input type="text" id="groupName" required>
+                </div>
+                <div class="form-group">
+                    <label for="groupDisplayName">Display Name</label>
+                    <input type="text" id="groupDisplayName">
+                </div>
+                <div class="form-group">
+                    <label>Clients</label>
+                    <div id="groupClientsCheckboxes" class="modal-checkbox-group"></div>
+                </div>
+                <div class="form-group">
+                    <label>Roles</label>
+                    <div id="groupRolesCheckboxes" class="modal-checkbox-group"></div>
+                </div>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-btn modal-btn-cancel" onclick="closeGroupModal()">Cancel</button>
+                    <button type="submit" class="modal-btn modal-btn-submit" id="groupSubmitBtn">Create</button>
                 </div>
             </form>
         </div>
