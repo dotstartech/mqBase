@@ -12,7 +12,7 @@ mqBase is based on [Mosquitto](https://github.com/eclipse-mosquitto/mosquitto) M
 
 [Docs and  Quick-Start](https://dotstartech.gitbook.io/mqbase/self-hosted)
 
-![](docs/mqbase-admin.png)
+![](docs/.gitbook/assets/mqbase-dark-broker-tab.png)
 
 ## Building
 
