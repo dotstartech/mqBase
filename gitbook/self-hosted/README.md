@@ -5,9 +5,11 @@ Deploy mqBase on your own infrastructure with full control over your data and co
 mqBase is distributed as a Docker image that bundles everything you need:
 
 * **Mosquitto** MQTT broker with dynamic security plugin
-* **libSQL** database for message persistence
-* **Nginx** web server for the admin UI
-* **Admin Web UI** for database queries, live broker monitoring, and ACL management
+* **libSQL** database for message persistence via Mosquitto plugin interface
+* **Admin Web UI** served by **Nginx** web server for
+    - Database queries
+    - Live broker monitoring
+    - ACL management
 
 ## Quick Links
 
