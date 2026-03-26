@@ -1089,6 +1089,7 @@ if $HAS_MQTTJS; then
     log_info "Running WebSocket tests with $MQTT_CLI..."
     
     # WebSocket options for MQTT.js CLI
+    #WS_OPTS="-h $BROKER -C wss --path /mqtt -u $USER -P $PASS"
     WS_OPTS="-h $BROKER -p $WS_PORT -C ws -u $USER -P $PASS"
 
 # =========================================================================
@@ -1101,6 +1102,7 @@ log_section "Section 12: WebSocket Connectivity"
 # -----------------------------------------
 echo ""
 echo "--- Test WS-1: WebSocket connection test ---"
+#log_info "Testing WebSocket connection to wss://$BROKER/mqtt"
 log_info "Testing WebSocket connection to ws://$BROKER:$WS_PORT"
 
 TOPIC_WS1="test/ws_connect_$TEST_ID"
