@@ -269,13 +269,13 @@
 			"acls": [
 				{
 					"acltype": "publishClientSend",
-					"topic": "+/test/#",
+					"topic": "test/#",
 					"priority": 0,
 					"allow": true
 				},
 				{
 					"acltype": "subscribePattern",
-					"topic": "+/test/#",
+					"topic": "test/#",
 					"priority": 0,
 					"allow": true
 				},

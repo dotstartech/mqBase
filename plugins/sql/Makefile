@@ -9,7 +9,7 @@ all : binary
 binary : ${PLUGIN_NAME}.so
 
 ${PLUGIN_NAME}.so : ${PLUGIN_NAME}.c
-		$(CROSS_COMPILE)$(CC) $(PLUGIN_CPPFLAGS) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -shared $< -o $@ -lsqlite3 -lpthread ../../lib/libmosquitto.so.1
+		$(CROSS_COMPILE)$(CC) -I../.. -I../../include -I../../lib $(PLUGIN_CPPFLAGS) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -shared $< -o $@ -lsqlite3 -lpthread ../../lib/libmosquitto.so.1
 
 reallyclean : clean
 clean:

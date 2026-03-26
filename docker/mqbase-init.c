@@ -79,8 +79,11 @@ void generate_salt(char *salt, size_t len) {
     salt[len - 1] = '\0';
 }
 
-/* Write content to a file */
+/* Write content to a file, removing existing file first to handle restart */
 int write_file(const char *path, const char *content) {
+    /* Remove existing file first to handle container restart
+       (file may be owned by different user from previous run) */
+    unlink(path);
     FILE *f = fopen(path, "w");
     if (!f) return -1;
     fputs(content, f);
@@ -341,9 +344,13 @@ int main(int argc, char *argv[]) {
     chmod("/mosquitto/data/dbs/default/wallog", 0666);
     
     /* Start mosquitto - plugin opens the same database sqld manages */
-    char *mosquitto_argv[] = {"/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf", NULL};
+    const char *mosquitto_conf = getenv("MOSQUITTO_CONFIG");
+    if (!mosquitto_conf || !mosquitto_conf[0]) {
+        mosquitto_conf = "/mosquitto/config/mosquitto.conf";
+    }
+    char *mosquitto_argv[] = {"/usr/sbin/mosquitto", "-c", (char *)mosquitto_conf, NULL};
     pids[2] = start_process("/usr/sbin/mosquitto", mosquitto_argv);
-    fprintf(stderr, "mqbase-init: Started mosquitto (pid %d)\n", pids[2]);
+    fprintf(stderr, "mqbase-init: Started mosquitto (pid %d) with config %s\n", pids[2], mosquitto_conf);
     
     fprintf(stderr, "mqbase-init: All services started\n");
     

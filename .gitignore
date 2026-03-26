@@ -6,6 +6,7 @@
 **/*.log
 **/.idea
 
+DEPLOYMENT.md
 .env
 .vscode/settings.json
 *.secrets

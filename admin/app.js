@@ -6,6 +6,14 @@
 const API_BASE = '/db-admin';
 
 // =============================================================================
+// Multi-tenant Mode Configuration
+// =============================================================================
+
+// Multi-tenant mode: detected from server response or URL
+let multiTenantMode = false;
+let session = null;  // { uid, email, topic_prefix, mqtt_username, token, is_admin }
+
+// =============================================================================
 // State Variables
 // =============================================================================
 
@@ -14,13 +22,15 @@ let isAutoRefreshEnabled = false;
 let lastQueryResult = null;
 let dbConnFailureCount = 0;  // Track consecutive DB connection failures
 
-// MQTT state
 let mqttClient = null;
 // Map with topic as key - each topic has only one entry (latest message)
 let mqttMessagesMap = new Map();
 const MAX_TOPICS = 5000;
 const MAX_DB_RESULTS = 5000;  // Maximum rows to return from database queries
-const MQTT_TOPIC = '#';  // Subscribe to all topics
+let MQTT_TOPIC = '#';  // Subscribe to all topics (overridden in multi-tenant mode)
+
+// Cached component versions
+let cachedMosquittoVersion = null;
 
 // =============================================================================
 // Utility Functions
@@ -157,6 +167,17 @@ function formatTimestamp(date) {
     return `${yearStr}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
 }
 
+// Escape HTML special characters to prevent XSS
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 // ULID timestamp extraction
 // ULID format: first 10 characters encode timestamp in milliseconds since Unix epoch
 function extractTimestampFromULID(ulid) {
@@ -260,6 +281,8 @@ function getCookie(name) {
 // mqBase authentication credentials (stored in memory for session)
 let mqbaseCredentials = null;
 let loginModalOpen = false;
+let signupModalOpen = false;
+let lastActivityTime = Date.now(); // Track last user activity for inactivity timeout
 
 // Session persistence configuration
 const SESSION_STORAGE_KEY = 'mqbase_session';
@@ -314,7 +337,7 @@ let sessionKey = null;
 // Uses sessionStorage by default (cleared on browser close) for security
 // Uses localStorage only if "Remember Me" is checked
 async function saveSession(rememberMe = false) {
-    if (!mqbaseCredentials) return;
+    if (!isLoggedIn()) return;
     
     try {
         // Generate encryption key if not exists
@@ -420,8 +443,15 @@ function clearSession() {
 
 // Refresh session timeout (called on user activity)
 async function refreshSessionTimeout() {
-    if (!mqbaseCredentials) return;
+    if (!isLoggedIn()) return;
     
+    // Multi-tenant mode - track last activity time for inactivity logout
+    if (multiTenantMode) {
+        lastActivityTime = Date.now();
+        return;
+    }
+    
+    // Standard mode - refresh localStorage expiry
     // Check which storage has the session
     let stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
     let storage = sessionStorage;
@@ -437,9 +467,9 @@ async function refreshSessionTimeout() {
     }
     
     try {
-        const session = JSON.parse(stored);
-        session.expiresAt = Date.now() + SESSION_TIMEOUT_MS;
-        storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+        const storedSession = JSON.parse(stored);
+        storedSession.expiresAt = Date.now() + SESSION_TIMEOUT_MS;
+        storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(storedSession));
     } catch (e) {
         await saveSession();
     }
@@ -450,7 +480,7 @@ let lastActivityRefresh = 0;
 const ACTIVITY_THROTTLE_MS = 10000; // Only refresh every 10 seconds max
 
 function throttledRefreshSession() {
-    if (!mqbaseCredentials) return;
+    if (!isLoggedIn()) return;
     
     const now = Date.now();
     if (now - lastActivityRefresh > ACTIVITY_THROTTLE_MS) {
@@ -470,8 +500,25 @@ function setupSessionActivityListeners() {
 
 // Check if session has expired and perform auto-logout if needed
 function checkSessionExpiry() {
-    if (!mqbaseCredentials) return;
+    if (!isLoggedIn()) return;
     
+    // Multi-tenant mode - check for inactivity timeout
+    if (multiTenantMode) {
+        // Check if we still have a session object
+        if (!session || !session.token) {
+            console.log('Session lost, logging out');
+            performLogout();
+            return;
+        }
+        // Check for inactivity timeout (30 minutes)
+        if (Date.now() - lastActivityTime > SESSION_TIMEOUT_MS) {
+            performLogout();
+            console.log('Session expired after ' + SESSION_TIMEOUT_MS / 60 / 1000 + ' m, logging out');
+        }
+        return;
+    }
+    
+    // Standard mode - check localStorage expiry
     try {
         // Check both storages
         let stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
@@ -486,8 +533,8 @@ function checkSessionExpiry() {
             return;
         }
         
-        const session = JSON.parse(stored);
-        if (Date.now() > session.expiresAt) {
+        const storedSession = JSON.parse(stored);
+        if (Date.now() > storedSession.expiresAt) {
             console.log('Session expired, logging out');
             performLogout();
         }
@@ -498,10 +545,32 @@ function checkSessionExpiry() {
 }
 
 function getDbAuthHeader() {
+    // In multi-tenant mode, use Bearer token
+    if (multiTenantMode && session && session.token) {
+        return 'Bearer ' + session.token;
+    }
+    // Standard mode uses Basic auth
     if (mqbaseCredentials) {
         return 'Basic ' + btoa(mqbaseCredentials.username + ':' + mqbaseCredentials.password);
     }
     return null;
+}
+
+// Get auth headers object for fetch requests
+function getAuthHeaders() {
+    const headers = {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+    };
+    const authHeader = getDbAuthHeader();
+    if (authHeader) {
+        headers['Authorization'] = authHeader;
+    }
+    return headers;
+}
+
+function isLoggedIn() {
+    return multiTenantMode ? (session !== null) : (mqbaseCredentials !== null);
 }
 
 function showLoginModal() {
@@ -510,13 +579,32 @@ function showLoginModal() {
         return;
     }
     
+    // Close signup modal if open (when switching from signup to login)
+    if (signupModalOpen) {
+        closeSignupModal();
+    }
+    
     loginModalOpen = true;
     const modal = document.getElementById('loginModal');
     const errorDiv = document.getElementById('loginError');
     errorDiv.textContent = '';
     errorDiv.style.display = 'none';
+    
+    // Ensure correct fields are shown based on mode
+    if (multiTenantMode) {
+        configureMultiTenantUI();
+    } else {
+        configureStandardUI();
+    }
+    
     modal.classList.add('active');
-    document.getElementById('loginUsername').focus();
+    
+    // Focus appropriate field based on mode
+    if (multiTenantMode) {
+        document.getElementById('loginEmail').focus();
+    } else {
+        document.getElementById('loginUsername').focus();
+    }
 }
 
 function closeLoginModal() {
@@ -526,67 +614,74 @@ function closeLoginModal() {
     document.getElementById('loginForm').reset();
 }
 
-async function handleLogin(event) {
+function showSignupModal() {
+    if (signupModalOpen) return;
+    
+    // Close login modal if open
+    closeLoginModal();
+    
+    signupModalOpen = true;
+    const modal = document.getElementById('signupModal');
+    const errorDiv = document.getElementById('signupError');
+    const successDiv = document.getElementById('signupSuccess');
+    errorDiv.textContent = '';
+    errorDiv.style.display = 'none';
+    successDiv.style.display = 'none';
+    modal.classList.add('active');
+    document.getElementById('signupEmail').focus();
+}
+
+function closeSignupModal() {
+    signupModalOpen = false;
+    const modal = document.getElementById('signupModal');
+    if (modal) {
+        modal.classList.remove('active');
+        document.getElementById('signupForm').reset();
+    }
+}
+
+async function handleSignup(event) {
     event.preventDefault();
     
-    const username = document.getElementById('loginUsername').value;
-    const password = document.getElementById('loginPassword').value;
-    const rememberMe = document.getElementById('loginRememberMe')?.checked || false;
-    const errorDiv = document.getElementById('loginError');
+    const email = document.getElementById('signupEmail').value;
+    const password = document.getElementById('signupPassword').value;
+    const passwordConfirm = document.getElementById('signupPasswordConfirm').value;
+    const errorDiv = document.getElementById('signupError');
+    const successDiv = document.getElementById('signupSuccess');
     
-    // Test credentials with a simple query
+    // Validate passwords match
+    if (password !== passwordConfirm) {
+        errorDiv.textContent = 'Passwords do not match';
+        errorDiv.style.display = 'block';
+        return;
+    }
+    
     try {
-        const authHeader = 'Basic ' + btoa(username + ':' + password);
-        const response = await fetch(`${API_BASE}/v1/execute`, {
+        const response = await fetch('/api/signup', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Authorization': authHeader
-            },
-            body: JSON.stringify({
-                stmt: ['SELECT 1']
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
         });
         
-        if (response.status === 401) {
-            errorDiv.textContent = 'Invalid username or password';
-            errorDiv.style.display = 'block';
-            return;
-        }
+        const data = await response.json();
         
         if (!response.ok) {
-            errorDiv.textContent = 'Connection error: ' + response.status;
+            errorDiv.textContent = data.error || 'Signup failed';
             errorDiv.style.display = 'block';
             return;
         }
         
-        // Credentials are valid - store them and save session
-        mqbaseCredentials = { username, password };
-        await saveSession(rememberMe);
-        closeLoginModal();
-        updateAuthMenuItem();
+        // Success - show message and switch to login
+        errorDiv.style.display = 'none';
+        successDiv.innerHTML = `Account created! Your MQTT topic prefix is <code>${data.topic_prefix}</code>. You can now login.`;
+        successDiv.style.display = 'block';
         
-        // Refresh data with new credentials
-        dbConnState();
-        loadMessages();
-        
-        // Connect MQTT if on Broker or ACL tab
-        const activeTab = document.querySelector('.tab-content.active');
-        if (activeTab && (activeTab.id === 'broker-tab' || activeTab.id === 'acl-tab')) {
-            if (!window.mqttConnected) {
-                initMqttConnection();
-                window.mqttConnected = true;
-            }
-            // Also reload ACL config if on ACL tab
-            if (activeTab.id === 'acl-tab') {
-                loadBrokerConfig();
-            }
-        }
-        // Refresh broker display if on that tab
-        if (activeTab && activeTab.id === 'broker-tab') {
-            displayMqttMessages();
-        }
+        // Auto-switch to login after 3 seconds
+        setTimeout(() => {
+            closeSignupModal();
+            showLoginModal();
+            document.getElementById('loginEmail').value = email;
+        }, 3000);
         
     } catch (error) {
         errorDiv.textContent = 'Connection failed: ' + error.message;
@@ -594,19 +689,158 @@ async function handleLogin(event) {
     }
 }
 
+async function handleLogin(event) {
+    event.preventDefault();
+    
+    const errorDiv = document.getElementById('loginError');
+    
+    if (multiTenantMode) {
+        // Multi-tenant mode - use JWT auth
+        const email = document.getElementById('loginEmail').value;
+        const password = document.getElementById('loginPassword').value;
+        
+        try {
+            const response = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                errorDiv.textContent = data.error || 'Invalid email or password';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            // Store multi-tenant session
+            session = {
+                uid: data.uid,
+                email: data.email,
+                topic_prefix: data.topic_prefix,
+                token: data.token,
+                is_admin: data.is_admin || false
+            };
+            
+            // Update MQTT topic to user's namespace
+            // Admin users have topic_prefix='#', so don't append '/#'
+            // Avoid double slash if topic_prefix already ends with /
+            if (data.topic_prefix === '#') {
+                MQTT_TOPIC = '#';
+            } else {
+                MQTT_TOPIC = data.topic_prefix.endsWith('/') ? data.topic_prefix + '#' : data.topic_prefix + '/#';
+            }
+            
+            closeLoginModal();
+            updateAuthMenuItem();
+            updateAdminTabVisibility();
+            onLoginSuccess();
+            
+        } catch (error) {
+            errorDiv.textContent = 'Connection failed: ' + error.message;
+            errorDiv.style.display = 'block';
+        }
+    } else {
+        // Standard mode - use Basic auth
+        const username = document.getElementById('loginUsername').value;
+        const password = document.getElementById('loginPassword').value;
+        
+        try {
+            const authHeader = 'Basic ' + btoa(username + ':' + password);
+            const response = await fetch(`${API_BASE}/v1/execute`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Authorization': authHeader
+                },
+                body: JSON.stringify({
+                    stmt: ['SELECT 1']
+                })
+            });
+            
+            if (response.status === 401) {
+                errorDiv.textContent = 'Invalid username or password';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (!response.ok) {
+                errorDiv.textContent = 'Connection error: ' + response.status;
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            // Credentials are valid - store them
+            mqbaseCredentials = { username, password };
+            closeLoginModal();
+            updateAuthMenuItem();
+            onLoginSuccess();
+            
+        } catch (error) {
+            errorDiv.textContent = 'Connection failed: ' + error.message;
+            errorDiv.style.display = 'block';
+        }
+    }
+}
+
+// Common actions after successful login
+function onLoginSuccess() {
+    // Reset activity timer on login
+    lastActivityTime = Date.now();
+    
+    // Show tenant banner if in multi-tenant mode
+    if (multiTenantMode && session) {
+        showTenantBanner();
+    }
+    
+    // Refresh data with new credentials
+    dbConnState();
+    loadMessages();
+    
+    // Refresh nginx/web server status for health card
+    refreshNginxStats();
+    
+    // Always connect MQTT after login regardless of which tab is active
+    if (!window.mqttConnected) {
+        initMqttConnection();
+        window.mqttConnected = true;
+    }
+    
+    // Load ACL config if on ACL tab
+    const activeTab = document.querySelector('.tab-content.active');
+    if (activeTab && activeTab.id === 'acl-tab') {
+        loadBrokerConfig();
+    }
+    // Refresh broker display if on that tab
+    if (activeTab && activeTab.id === 'broker-tab') {
+        displayMqttMessages();
+    }
+}
+
+// Show multi-tenant mode info banner
+function showTenantBanner() {
+    const banner = document.getElementById('tenantBanner');
+    if (!banner || !session) return;
+
+    banner.innerHTML = `<a href="#" onclick="showUserAccountModal(); return false;" class="account-link"><code>👤 ${session.email}</code></a>`;
+    banner.style.display = 'block';
+}
+
 // Update the Login/Logout menu item and button based on auth state
 function updateAuthMenuItem() {
     const menuItem = document.getElementById('authMenuItem');
     const authButton = document.getElementById('authButton');
-    const label = mqbaseCredentials ? 'Logout' : 'Login';
-    //const label = mqbaseCredentials ? '⏻ Logout' : 'Login';
+    const loggedIn = isLoggedIn();
+    const label = loggedIn ? 'Logout' : 'Login';
     
     if (menuItem) {
         menuItem.textContent = label;
     }
     if (authButton) {
         authButton.textContent = label;
-        authButton.title = mqbaseCredentials ? 'Logout' : 'Login';
+        authButton.title = loggedIn ? 'Logout' : 'Login';
     }
 }
 
@@ -614,7 +848,7 @@ function updateAuthMenuItem() {
 function handleAuthMenuClick() {
     toggleSettingsMenu();
     
-    if (mqbaseCredentials) {
+    if (isLoggedIn()) {
         performLogout();
     } else {
         showLoginModal();
@@ -623,7 +857,7 @@ function handleAuthMenuClick() {
 
 // Handle Login/Logout button click (same as menu but no menu toggle)
 function handleAuthButtonClick() {
-    if (mqbaseCredentials) {
+    if (isLoggedIn()) {
         performLogout();
     } else {
         showLoginModal();
@@ -631,7 +865,21 @@ function handleAuthButtonClick() {
 }
 
 // Perform logout - clear credentials and data
-function performLogout() {
+async function performLogout() {
+    // In multi-tenant mode, call logout API
+    if (multiTenantMode && session) {
+        try {
+            await fetch('/api/logout', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + session.token }
+            });
+        } catch (e) {
+            // Ignore logout errors
+        }
+        session = null;
+        MQTT_TOPIC = '#';  // Reset to default
+    }
+    
     mqbaseCredentials = null;
     clearSession();
     loginModalOpen = false;
@@ -643,7 +891,9 @@ function performLogout() {
         dbTbody.innerHTML = '';
     }
     const dbStatusIcon = document.getElementById('dbStatusIcon');
-    if (dbStatusIcon) dbStatusIcon.textContent = '⚫';
+    if (dbStatusIcon) {
+        setStatusGlow(dbStatusIcon, null);
+    }
     
     // Clear broker tab data and disconnect MQTT
     mqttMessagesMap.clear();
@@ -681,6 +931,16 @@ function performLogout() {
     window.availableClients = [];
     window.availableGroups = [];
     window.availableRoles = [];
+    
+    // Clear stats history and cache
+    statsThroughputHistory = { received: [], sent: [], labels: [] };
+    statsConnectionsHistory = { connected: [], subscriptions: [], labels: [] };
+    statsInflightHistory = { queued: [], labels: [] };
+    statsStoreHistory = { count: [], labels: [] };
+    sysTopicValues = {};
+    lastSysMessageTime = 0;
+    cachedMosquittoVersion = null;
+    sessionStorage.removeItem('statsHistoryCache');
     
     // Stop auto-refresh if running
     if (isAutoRefreshEnabled) {
@@ -742,8 +1002,10 @@ async function dbConnState() {
     const dbStatusIcon = document.getElementById('dbStatusIcon');
     
     // Skip DB connection check if not logged in
-    if (!mqbaseCredentials) {
-        if (dbStatusIcon) dbStatusIcon.textContent = '⚫';
+    if (!isLoggedIn()) {
+        if (dbStatusIcon) {
+            setStatusGlow(dbStatusIcon, null);
+        }
         return;
     }
     
@@ -752,17 +1014,36 @@ async function dbConnState() {
         // Skip session refresh - this is a background status check, not user activity
         const result = await executeSQL(`SELECT COUNT(*) FROM msg LIMIT 1`);
         if (result.result) {
-            if (dbStatusIcon) dbStatusIcon.textContent = '🟢';
+            if (dbStatusIcon) {
+                setStatusGlow(dbStatusIcon, 'status-connected');
+            }
+            // Also update the Database health card on Stats tab
+            const dbCard = document.getElementById('health-db');
+            if (dbCard) {
+                dbCard.className = 'health-card health-card-wide healthy';
+            }
             dbConnFailureCount = 0;  // Reset failure counter on success
         }
     } catch (error) {
         console.error('Error loading stats:', error);
         dbConnFailureCount++;
+        // Also update the Database health card on Stats tab
+        const dbCard = document.getElementById('health-db');
         // Only show disconnected (red) after 3 consecutive failures
         if (dbConnFailureCount >= 3) {
-            if (dbStatusIcon) dbStatusIcon.textContent = '🔴';
+            if (dbStatusIcon) {
+                setStatusGlow(dbStatusIcon, 'status-disconnected');
+            }
+            if (dbCard) {
+                dbCard.className = 'health-card health-card-wide unhealthy';
+            }
         } else {
-            if (dbStatusIcon) dbStatusIcon.textContent = '🟡';  // Show yellow during transient failures
+            if (dbStatusIcon) {
+                setStatusGlow(dbStatusIcon, 'status-warning');
+            }
+            if (dbCard) {
+                dbCard.className = 'health-card health-card-wide warning';
+            }
         }
     }
 }
@@ -770,7 +1051,7 @@ async function dbConnState() {
 async function loadMessages() {
     return preventDuplicateRequest('loadMessages', async () => {
         // Skip if not logged in
-        if (!mqbaseCredentials) {
+        if (!isLoggedIn()) {
             return;
         }
         
@@ -831,10 +1112,13 @@ async function loadMessages() {
                 lastQueryResult = result;
             }
         } catch (error) {
-            showMessage(`Error: ${error.message}`, 'error');
-            const resultsEl = document.getElementById('results');
-            if (resultsEl) resultsEl.innerHTML = '';
-            lastQueryResult = null;
+            // Don't clear results on transient errors - just log and show message
+            // This prevents the table from going blank during temporary network issues
+            console.warn('Database query error (keeping existing data):', error.message);
+            // Only show error message if this is a persistent error (not during auto-refresh)
+            if (!lastQueryResult) {
+                showMessage(`Error: ${error.message}`, 'error');
+            }
         }
     });
 }
@@ -842,7 +1126,7 @@ async function loadMessages() {
 async function executeCustomQuery() {
     return preventDuplicateRequest('executeCustomQuery', async () => {
         // Check if user is logged in
-        if (!mqbaseCredentials) {
+        if (!isLoggedIn()) {
             showLoginModal();
             return;
         }
@@ -916,16 +1200,19 @@ function displayResults(data, limitEnforced = false) {
     const tbody = document.querySelector('#db-messages-table tbody');
     const messageDiv = document.getElementById('message');
     
+    if (!tbody) {
+        console.warn('Database table tbody not found');
+        return;
+    }
+    
     if (!data.result) {
         tbody.innerHTML = '';
-        showMessage('No results returned', 'info');
         return;
     }
 
     const result = data.result;
     if (!result.rows || result.rows.length === 0) {
         tbody.innerHTML = '';
-        showMessage('No messages found', 'info');
         return;
     }
 
@@ -1000,7 +1287,7 @@ function showMessage(text, type) {
 
 function clearFilter() {
     // Skip if not logged in
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         return;
     }
     
@@ -1016,49 +1303,61 @@ function clearFilter() {
 }
 
 function toggleAutoRefresh(forceOff = false) {
-    const checkbox = document.getElementById('autoRefreshCheckbox');
-    if (!checkbox) return;
+    const dropdown = document.getElementById('dbRefreshInterval');
+    if (!dropdown) return;
     
     if (forceOff) {
-        checkbox.checked = false;
-    }
-    isAutoRefreshEnabled = checkbox.checked;
-    const customQueryField = document.getElementById('customQuery');
-    const executeBtn = document.getElementById('executeBtn');
-    
-    if (isAutoRefreshEnabled) {
-        // Clear custom query field when enabling auto-refresh
-        customQueryField.value = '';
-        
-        // Disable custom query controls
-        customQueryField.disabled = true;
-        executeBtn.disabled = true;
-        
-        // Immediately load messages before starting the interval
-        loadMessages();
-        
-        startAutoRefresh();
-    } else {
-        // Enable custom query controls
-        customQueryField.disabled = false;
-        executeBtn.disabled = false;
-        
+        dropdown.value = '0';
         stopAutoRefresh();
+        // Enable custom query controls
+        const customQueryField = document.getElementById('customQuery');
+        const executeBtn = document.getElementById('executeBtn');
+        if (customQueryField) customQueryField.disabled = false;
+        if (executeBtn) executeBtn.disabled = false;
     }
 }
 
-function startAutoRefresh() {
+// Set database auto-refresh interval from dropdown
+function setDbRefreshInterval(intervalMs) {
+    stopAutoRefresh();
+    
+    const interval = parseInt(intervalMs);
+    const customQueryField = document.getElementById('customQuery');
+    const executeBtn = document.getElementById('executeBtn');
+    
+    if (interval > 0) {
+        // Clear custom query field when enabling auto-refresh
+        if (customQueryField) {
+            customQueryField.value = '';
+            customQueryField.disabled = true;
+        }
+        if (executeBtn) executeBtn.disabled = true;
+        
+        isAutoRefreshEnabled = true;
+        startAutoRefresh(interval);
+    } else {
+        // Enable custom query controls
+        if (customQueryField) customQueryField.disabled = false;
+        if (executeBtn) executeBtn.disabled = false;
+        isAutoRefreshEnabled = false;
+    }
+    
+    // Save preference
+    saveFilterPreferences();
+}
+
+function startAutoRefresh(intervalMs = 3000) {
     // Clear any existing interval
     if (autoRefreshInterval) {
         clearInterval(autoRefreshInterval);
     }
     
-    // Set up new interval - refresh every 3 seconds
+    // Set up new interval with specified interval
     autoRefreshInterval = setInterval(() => {
-        if (isAutoRefreshEnabled && document.getElementById('database-tab').classList.contains('active')) {
+        if (isAutoRefreshEnabled && isLoggedIn() && document.getElementById('database-tab').classList.contains('active')) {
             loadMessages();
         }
-    }, 3000);
+    }, intervalMs);
 }
 
 function stopAutoRefresh() {
@@ -1094,7 +1393,7 @@ function switchTab(tabName) {
     }
 
     // Auto-connect MQTT if switching to Broker or ACL tab (only if logged in)
-    if ((tabName === 'broker' || tabName === 'acl') && !window.mqttConnected && mqbaseCredentials) {
+    if ((tabName === 'broker' || tabName === 'acl') && !window.mqttConnected && isLoggedIn()) {
         setTimeout(() => {
             initMqttConnection();
             window.mqttConnected = true;
@@ -1107,17 +1406,113 @@ function switchTab(tabName) {
             displayMqttMessages();
         }, 150);
     }
+    
+    // Load admin users when switching to Admin tab
+    if (tabName === 'admin' && session && session.is_admin) {
+        loadAdminUsers();
+    }
+    
+    // Initialize stats when switching to Stats tab
+    if (tabName === 'stats') {
+        // Connect MQTT if not connected (needed for $SYS topics)
+        if (!window.mqttConnected && isLoggedIn()) {
+            setTimeout(() => {
+                initMqttConnection();
+                window.mqttConnected = true;
+                setTimeout(initStats, 500);
+            }, 100);
+        } else {
+            initStats();
+        }
+    } else {
+        // Stop auto-refresh when leaving stats tab
+        stopStatsAutoRefresh();
+    }
 }
 
 // Restore active tab from cookie
 function restoreActiveTab() {
     const savedTab = getCookie('activeTab');
-    if (savedTab && ['database', 'broker', 'acl'].includes(savedTab)) {
-        // Find and click the corresponding tab button
+    if (savedTab && ['database', 'broker', 'acl', 'admin', 'stats'].includes(savedTab)) {
+        // Don't restore admin tab if user is not admin
+        if (savedTab === 'admin' && (!session || !session.is_admin)) {
+            return;
+        }
+        // Find and click the corresponding tab button by checking onclick attribute
         const tabs = document.querySelectorAll('.tab');
         tabs.forEach(tab => {
-            if (tab.textContent.toLowerCase().includes(savedTab)) {
+            const onclick = tab.getAttribute('onclick');
+            if (onclick && onclick.includes(`switchTab('${savedTab}')`)) {
                 tab.click();
+            }
+        });
+    }
+}
+
+// =============================================================================
+// Dynsec Command Helper
+// =============================================================================
+
+// Send dynsec commands - uses API in multi-tenant mode, MQTT in standard mode
+async function sendDynsecCommand(commands, successMessage, errorMessage, onSuccess) {
+    const commandPayload = { commands: Array.isArray(commands) ? commands : [commands] };
+    
+    if (multiTenantMode) {
+        // Multi-tenant mode: use POST /broker-config API
+        try {
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+            const authHeader = getDbAuthHeader();
+            if (authHeader) {
+                headers['Authorization'] = authHeader;
+            }
+            
+            const response = await fetch('/broker-config', {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(commandPayload)
+            });
+            
+            if (response.status === 401) {
+                showLoginModal();
+                return;
+            }
+            
+            if (response.status === 403) {
+                const data = await response.json();
+                showMessage(data.error || 'Access denied', 'error');
+                return;
+            }
+            
+            if (!response.ok) {
+                const data = await response.json();
+                showMessage(data.error || errorMessage || 'Operation failed', 'error');
+                return;
+            }
+            
+            showMessage(successMessage, 'success');
+            if (onSuccess) onSuccess();
+            setTimeout(() => loadBrokerConfig(), 500);
+        } catch (error) {
+            showMessage(`${errorMessage || 'Operation failed'}: ${error.message}`, 'error');
+        }
+    } else {
+        // Standard mode: use MQTT publish to $CONTROL
+        if (!mqttClient || !mqttClient.connected) {
+            showMessage('MQTT not connected. Please connect first.', 'error');
+            return;
+        }
+        
+        const topic = '$CONTROL/dynamic-security/v1';
+        mqttClient.publish(topic, JSON.stringify(commandPayload), { qos: 1 }, (err) => {
+            if (err) {
+                showMessage(`${errorMessage || 'Operation failed'}: ${err.message}`, 'error');
+            } else {
+                showMessage(successMessage, 'success');
+                if (onSuccess) onSuccess();
+                setTimeout(() => loadBrokerConfig(), 500);
             }
         });
     }
@@ -1161,7 +1556,7 @@ async function loadBrokerConfig() {
         window.availableRoles = config.roles || [];
         
         // Ensure MQTT is connected when ACL data loads successfully
-        if (!window.mqttConnected && mqbaseCredentials) {
+        if (!window.mqttConnected && isLoggedIn()) {
             initMqttConnection();
             window.mqttConnected = true;
         }
@@ -1251,14 +1646,21 @@ function displayDefaultACL(defaultACL) {
     const container = document.getElementById('default-acl');
     const permissions = Object.entries(defaultACL);
     
+    // Check if current user is admin
+    // In standard mode, logged-in users are admins
+    // In multi-tenant mode, check session.is_admin
+    const isAdmin = multiTenantMode ? (session && session.is_admin) : isLoggedIn();
+    
     let html = '';
     permissions.forEach(([key, value], index) => {
         const isAllowed = value;
+        const disabled = isAdmin ? '' : 'disabled';
+        const readOnlyClass = isAdmin ? '' : 'read-only';
         html += `
-            <div class="acl-permission">
+            <div class="acl-permission ${readOnlyClass}">
                 <span class="acl-permission-name">${key}</span>
                 <label class="acl-toggle">
-                    <input type="checkbox" ${isAllowed ? 'checked' : ''} onchange="toggleDefaultACL('${key}', this.checked)">
+                    <input type="checkbox" ${isAllowed ? 'checked' : ''} ${disabled} onchange="toggleDefaultACL('${key}', this.checked)">
                     <span class="acl-toggle-slider"></span>
                     <span class="acl-toggle-label acl-deny">✗ Denied</span>
                     <span class="acl-toggle-label acl-allow">✓ Allowed</span>
@@ -1271,42 +1673,33 @@ function displayDefaultACL(defaultACL) {
 }
 
 async function toggleDefaultACL(aclType, allowed) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         loadBrokerConfig(); // Revert the toggle
         return;
     }
     
-    if (!mqttClient || !mqttClient.connected) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
         showMessage('MQTT not connected. Please connect first.', 'error');
-        // Revert the toggle
         loadBrokerConfig();
         return;
     }
     
     const command = {
-        commands: [{
-            command: 'setDefaultACLAccess',
-            acls: [{
-                acltype: aclType,
-                allow: allowed
-            }]
+        command: 'setDefaultACLAccess',
+        acls: [{
+            acltype: aclType,
+            allow: allowed
         }]
     };
     
-    const topic = '$CONTROL/dynamic-security/v1';
-    const message = JSON.stringify(command);
-    
-    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Failed to update default ACL: ${err.message}`, 'error');
-            loadBrokerConfig(); // Revert on error
-        } else {
-            showMessage(`Default ACL '${aclType}' set to ${allowed ? 'Allowed' : 'Denied'}`, 'success');
-            // Reload to confirm the change
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        command,
+        `Default ACL '${aclType}' set to ${allowed ? 'Allowed' : 'Denied'}`,
+        'Failed to update default ACL',
+        null
+    );
 }
 
 // =============================================================================
@@ -1314,7 +1707,7 @@ async function toggleDefaultACL(aclType, allowed) {
 // =============================================================================
 
 function openCreateClientModal() {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1335,7 +1728,7 @@ function openCreateClientModal() {
 }
 
 function openEditClientModal(username) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1481,6 +1874,22 @@ async function createClient(username, displayName, password, groups, roles) {
         });
     });
     
+    // Add $SYS/# ACLs for broker metrics access
+    commands.push({
+        command: 'addClientACL',
+        username: username,
+        acltype: 'subscribePattern',
+        topic: '$SYS/#',
+        allow: true
+    });
+    commands.push({
+        command: 'addClientACL',
+        username: username,
+        acltype: 'publishClientReceive',
+        topic: '$SYS/#',
+        allow: true
+    });
+    
     sendClientCommands(commands, `Client '${username}' created successfully`);
 }
 
@@ -1555,7 +1964,7 @@ async function updateClient(username, displayName, password, newGroups, newRoles
 }
 
 function confirmDeleteClient(username) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1567,42 +1976,33 @@ function confirmDeleteClient(username) {
 }
 
 async function deleteClient(username) {
-    if (!mqttClient || !mqttClient.connected) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
         showMessage('MQTT not connected. Please connect first.', 'error');
         return;
     }
     
-    const command = {
-        commands: [{
-            command: 'deleteClient',
-            username: username
-        }]
-    };
-    
-    const topic = '$CONTROL/dynamic-security/v1';
-    mqttClient.publish(topic, JSON.stringify(command), { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Failed to delete client: ${err.message}`, 'error');
-        } else {
-            showMessage(`Client '${username}' deleted successfully`, 'success');
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        { command: 'deleteClient', username: username },
+        `Client '${username}' deleted successfully`,
+        'Failed to delete client',
+        null
+    );
 }
 
-function sendClientCommands(commands, successMessage) {
-    const topic = '$CONTROL/dynamic-security/v1';
-    const message = JSON.stringify({ commands });
+async function sendClientCommands(commands, successMessage) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
     
-    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Operation failed: ${err.message}`, 'error');
-        } else {
-            showMessage(successMessage, 'success');
-            closeClientModal();
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        commands,
+        successMessage,
+        'Operation failed',
+        closeClientModal
+    );
 }
 
 // =============================================================================
@@ -1613,7 +2013,7 @@ function sendClientCommands(commands, successMessage) {
 let editingRoleAcls = [];
 
 function openCreateRoleModal() {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1630,7 +2030,7 @@ function openCreateRoleModal() {
 }
 
 function openEditRoleModal(rolename) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1809,7 +2209,7 @@ async function updateRole(rolename, newAcls) {
 }
 
 function confirmDeleteRole(rolename) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1821,42 +2221,33 @@ function confirmDeleteRole(rolename) {
 }
 
 async function deleteRole(rolename) {
-    if (!mqttClient || !mqttClient.connected) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
         showMessage('MQTT not connected. Please connect first.', 'error');
         return;
     }
     
-    const command = {
-        commands: [{
-            command: 'deleteRole',
-            rolename: rolename
-        }]
-    };
-    
-    const topic = '$CONTROL/dynamic-security/v1';
-    mqttClient.publish(topic, JSON.stringify(command), { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Failed to delete role: ${err.message}`, 'error');
-        } else {
-            showMessage(`Role '${rolename}' deleted successfully`, 'success');
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        { command: 'deleteRole', rolename: rolename },
+        `Role '${rolename}' deleted successfully`,
+        'Failed to delete role',
+        null
+    );
 }
 
-function sendRoleCommands(commands, successMessage) {
-    const topic = '$CONTROL/dynamic-security/v1';
-    const message = JSON.stringify({ commands });
+async function sendRoleCommands(commands, successMessage) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
     
-    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Operation failed: ${err.message}`, 'error');
-        } else {
-            showMessage(successMessage, 'success');
-            closeRoleModal();
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        commands,
+        successMessage,
+        'Operation failed',
+        closeRoleModal
+    );
 }
 
 // =============================================================================
@@ -1888,7 +2279,7 @@ function displayGroups(groups) {
 }
 
 function openCreateGroupModal() {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -1906,7 +2297,7 @@ function openCreateGroupModal() {
 }
 
 function openEditGroupModal(groupname) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -2106,7 +2497,7 @@ async function updateGroup(groupname, displayName, newClients, newRoles) {
 }
 
 function confirmDeleteGroup(groupname) {
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -2118,42 +2509,33 @@ function confirmDeleteGroup(groupname) {
 }
 
 async function deleteGroup(groupname) {
-    if (!mqttClient || !mqttClient.connected) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
         showMessage('MQTT not connected. Please connect first.', 'error');
         return;
     }
     
-    const command = {
-        commands: [{
-            command: 'deleteGroup',
-            groupname: groupname
-        }]
-    };
-    
-    const topic = '$CONTROL/dynamic-security/v1';
-    mqttClient.publish(topic, JSON.stringify(command), { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Failed to delete group: ${err.message}`, 'error');
-        } else {
-            showMessage(`Group '${groupname}' deleted successfully`, 'success');
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        { command: 'deleteGroup', groupname: groupname },
+        `Group '${groupname}' deleted successfully`,
+        'Failed to delete group',
+        null
+    );
 }
 
-function sendGroupCommands(commands, successMessage) {
-    const topic = '$CONTROL/dynamic-security/v1';
-    const message = JSON.stringify({ commands });
+async function sendGroupCommands(commands, successMessage) {
+    // In standard mode, check MQTT connection
+    if (!multiTenantMode && (!mqttClient || !mqttClient.connected)) {
+        showMessage('MQTT not connected. Please connect first.', 'error');
+        return;
+    }
     
-    mqttClient.publish(topic, message, { qos: 1 }, (err) => {
-        if (err) {
-            showMessage(`Operation failed: ${err.message}`, 'error');
-        } else {
-            showMessage(successMessage, 'success');
-            closeGroupModal();
-            setTimeout(() => loadBrokerConfig(), 500);
-        }
-    });
+    await sendDynsecCommand(
+        commands,
+        successMessage,
+        'Operation failed',
+        closeGroupModal
+    );
 }
 
 // =============================================================================
@@ -2176,7 +2558,13 @@ async function initMqttConnection() {
 
     // WebSocket URL - use wss:// for HTTPS, ws:// for HTTP
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/mqtt`;
+    let wsUrl = `${protocol}//${window.location.host}/mqtt`;
+    
+    // For multi-tenant mode, we need to pass the session token as a query parameter
+    // because MQTT.js WebSocket doesn't include cookies automatically
+    if (multiTenantMode && session && session.token) {
+        wsUrl += `?token=${encodeURIComponent(session.token)}`;
+    }
     
     try {
         updateMqttStatus('Connecting...', '🟡', 'var(--ctp-yellow)');
@@ -2220,6 +2608,9 @@ async function initMqttConnection() {
         mqttClient.on('connect', () => {
             console.log('MQTT connected');
             
+            // Immediately update health status on connect
+            updateMqttHealthCard();
+            
             // Subscribe to topic with:
             // - rap: Retain As Published - preserve retain flag on forwarded messages
             // - rh: Retain Handling 0 - send retained messages at subscribe time
@@ -2233,9 +2624,22 @@ async function initMqttConnection() {
                     updateMqttStatus(`Connected`, '🟢', 'var(--ctp-green)');
                 }
             });
+            
+            // Also subscribe to $SYS topics for stats (needed after reconnection)
+            mqttClient.subscribe('$SYS/#', { qos: 0 }, (err) => {
+                if (!err) {
+                    console.log('Subscribed to $SYS topics');
+                }
+            });
         });
 
         mqttClient.on('message', (topic, payload, packet) => {
+            // Handle $SYS topics for stats
+            if (topic.startsWith('$SYS/')) {
+                handleSysMessage(topic, payload);
+                return;
+            }
+            
             const payloadStr = payload.toString();
             
             // Empty payload with retain flag means the retained message is being cleared
@@ -2312,16 +2716,21 @@ async function initMqttConnection() {
         mqttClient.on('error', (err) => {
             console.error('MQTT error:', err);
             updateMqttStatus('Error', '❌', 'var(--ctp-red)');
+            updateMqttHealthCard();
+            stopStatsAutoRefresh();
         });
 
         mqttClient.on('close', () => {
             console.log('MQTT disconnected');
             updateMqttStatus('Disconnected', '⚫', 'var(--ctp-subtext0)');
+            updateMqttHealthCard();
+            stopStatsAutoRefresh();
         });
 
         mqttClient.on('reconnect', () => {
             console.log('MQTT reconnecting...');
             updateMqttStatus('Reconnecting...', '🟡', 'var(--ctp-yellow)');
+            updateMqttHealthCard();
         });
 
     } catch (error) {
@@ -2330,20 +2739,46 @@ async function initMqttConnection() {
     }
 }
 
+function setStatusGlow(element, state) {
+    if (!element) return;
+    element.classList.remove('status-connected', 'status-disconnected', 'status-warning');
+    if (state) {
+        element.classList.add(state);
+    }
+}
+
 function updateMqttStatus(text, icon, color) {
     const statusIcon = document.getElementById('mqttStatusIcon');
     if (statusIcon) {
-        statusIcon.textContent = icon;
-        if (color) {
-            statusIcon.style.color = color;
+        // Set glow class based on icon
+        if (icon === '🟢') {
+            setStatusGlow(statusIcon, 'status-connected');
+        } else if (icon === '🔴' || icon === '❌') {
+            setStatusGlow(statusIcon, 'status-disconnected');
+        } else if (icon === '🟡') {
+            setStatusGlow(statusIcon, 'status-warning');
+        } else {
+            setStatusGlow(statusIcon, null);
+        }
+    }
+    
+    // Also update the MQTT health card on Stats tab to keep in sync
+    const mqttCard = document.getElementById('health-mqtt');
+    if (mqttCard) {
+        if (icon === '🟢') {
+            mqttCard.className = 'health-card health-card-wide healthy';
+        } else if (icon === '🔴' || icon === '❌') {
+            mqttCard.className = 'health-card health-card-wide unhealthy';
+        } else if (icon === '🟡') {
+            mqttCard.className = 'health-card health-card-wide warning';
         }
     }
 }
 
 // Publish a message to the MQTT broker
 function publishMessage() {
-    // Check if user is logged in
-    if (!mqbaseCredentials) {
+    // Check if user is logged in (works for both standard and multi-tenant mode)
+    if (!isLoggedIn()) {
         showLoginModal();
         return;
     }
@@ -2359,7 +2794,7 @@ function publishMessage() {
     const retainedCheckbox = document.getElementById('publishRetained');
     const qosSelect = document.getElementById('publishQos');
     
-    const topic = topicInput ? topicInput.value.trim() : '';
+    let topic = topicInput ? topicInput.value.trim() : '';
     const message = messageInput ? messageInput.value : '';
     const retained = retainedCheckbox ? retainedCheckbox.checked : false;
     const qos = qosSelect ? parseInt(qosSelect.value) : 2;
@@ -2368,6 +2803,15 @@ function publishMessage() {
         showMessage('Please enter a topic', 'error');
         if (topicInput) topicInput.focus();
         return;
+    }
+    
+    // In multi-tenant mode, auto-prepend the user's topic prefix
+    // Admin users have topic_prefix='#' which is a wildcard for subscriptions only,
+    // so don't prepend anything for admin users when publishing
+    if (multiTenantMode && session && session.topic_prefix && session.topic_prefix !== '#') {
+        // Avoid double slash if topic_prefix already ends with /
+        const prefix = session.topic_prefix.endsWith('/') ? session.topic_prefix : session.topic_prefix + '/';
+        topic = prefix + topic;
     }
     
     mqttClient.publish(topic, message, { retain: retained, qos: qos }, (err) => {
@@ -2434,17 +2878,38 @@ function executeDeleteRetainedMessage(topic, ulid) {
 
 function displayMqttMessages() {
     // Skip if not logged in - don't modify table at all
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         return;
     }
     
     const tbody = document.querySelector('#mqtt-messages-table tbody');
     if (!tbody) {
-        console.log('ERROR: tbody not found');
-        return;
+        const brokerResults = document.getElementById('broker-results');
+        if (brokerResults) {
+            brokerResults.innerHTML = `
+                <table id="mqtt-messages-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Topic</th>
+                            <th>Payload</th>
+                            <th>Headers</th>
+                            <th>Retained</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            `;
+            tbody = document.querySelector('#mqtt-messages-table tbody');
+        }
+        if (!tbody) {
+            console.log('ERROR: tbody not found');
+            return;
+        }
     }
     
-    console.log('displayMqttMessages called, total topics:', mqttMessagesMap.size);
+    //console.log('displayMqttMessages called, total topics:', mqttMessagesMap.size);
     
     // Get filter values
     const filterInput = document.getElementById('brokerTopicFilter');
@@ -2459,7 +2924,7 @@ function displayMqttMessages() {
     const persistentOnlyCheckbox = document.getElementById('persistentOnlyFilter');
     const persistentOnly = persistentOnlyCheckbox ? persistentOnlyCheckbox.checked : false;
     
-    console.log('Filters - topic:', filterValue, 'time:', timeFilterValue, 'limit:', limitValue, 'persistentOnly:', persistentOnly);
+    //console.log('Filters - topic:', filterValue, 'time:', timeFilterValue, 'limit:', limitValue, 'persistentOnly:', persistentOnly);
     
     // Convert Map values to array and sort by timestamp (newest first)
     let filteredMessages = Array.from(mqttMessagesMap.values())
@@ -2489,7 +2954,7 @@ function displayMqttMessages() {
     // Apply limit (take first N messages)
     filteredMessages = filteredMessages.slice(0, limitValue);
     
-    console.log('Filtered messages:', filteredMessages.length);
+    //console.log('Filtered messages:', filteredMessages.length);
     
     tbody.innerHTML = '';
     
@@ -2534,12 +2999,12 @@ function displayMqttMessages() {
         tbody.appendChild(row);
     });
     
-    console.log('Table updated with', filteredMessages.length, 'rows');
+    //console.log('Table updated with', filteredMessages.length, 'rows');
 }
 
 function clearMqttMessages() {
     // Skip if not logged in
-    if (!mqbaseCredentials) {
+    if (!isLoggedIn()) {
         return;
     }
     
@@ -2580,7 +3045,6 @@ function toggleSettingsMenu() {
     if (!menu) return;
     
     const isOpen = menu.classList.contains('active');
-    
     if (isOpen) {
         closeSettingsMenu();
     } else {
@@ -2589,6 +3053,7 @@ function toggleSettingsMenu() {
         updateTimeFormatSelect();
         menu.classList.add('active');
         document.body.classList.add('sidebar-open');
+        resizeStatsCharts();
     }
 }
 
@@ -2598,6 +3063,22 @@ function closeSettingsMenu() {
     
     menu.classList.remove('active');
     document.body.classList.remove('sidebar-open');
+    resizeStatsCharts();
+}
+
+// Resize all stats charts after layout change
+function resizeStatsCharts() {
+    const doResize = () => {
+        if (statsCharts.throughput) statsCharts.throughput.resize();
+        if (statsCharts.connections) statsCharts.connections.resize();
+        if (statsCharts.inflight) statsCharts.inflight.resize();
+        if (statsCharts.store) statsCharts.store.resize();
+    };
+    
+    // Resize multiple times during transition to ensure proper sizing
+    setTimeout(doResize, 50);
+    setTimeout(doResize, 200);
+    setTimeout(doResize, 350);
 }
 
 function updateFontSelect() {
@@ -2675,10 +3156,7 @@ function setTheme(theme) {
 }
 
 function updateThemeToggle(theme) {
-    const slider = document.getElementById('themeSlider');
-    const darkLabel = document.getElementById('themeLabelDark');
-    const lightLabel = document.getElementById('themeLabelLight');
-    
+    const slider = document.getElementById('themeSlider');    
     if (slider) {
         if (theme === 'light') {
             slider.classList.add('light');
@@ -2686,7 +3164,9 @@ function updateThemeToggle(theme) {
             slider.classList.remove('light');
         }
     }
-    
+
+    const darkLabel = document.getElementById('themeLabelDark');
+    const lightLabel = document.getElementById('themeLabelLight');
     if (darkLabel && lightLabel) {
         if (theme === 'light') {
             darkLabel.classList.remove('active');
@@ -2744,10 +3224,7 @@ function updateQosToggle(show) {
 }
 
 function updateRetainedToggle(show) {
-    const slider = document.getElementById('retainedSlider');
-    const hideLabel = document.getElementById('retainedLabelHide');
-    const showLabel = document.getElementById('retainedLabelShow');
-    
+    const slider = document.getElementById('retainedSlider');    
     if (slider) {
         if (show) {
             slider.classList.add('on');
@@ -2755,7 +3232,9 @@ function updateRetainedToggle(show) {
             slider.classList.remove('on');
         }
     }
-    
+
+    const hideLabel = document.getElementById('retainedLabelHide');
+    const showLabel = document.getElementById('retainedLabelShow');
     if (hideLabel && showLabel) {
         if (show) {
             hideLabel.classList.remove('active');
@@ -2768,17 +3247,16 @@ function updateRetainedToggle(show) {
 }
 
 function loadColumnVisibilityPreferences() {
-    const showQos = getCookie('showQosColumn');
-    const showRetained = getCookie('showRetainedColumn');
-    
     // Default to showing columns if no preference saved
+    const showQos = getCookie('showQosColumn');
     if (showQos === 'false') {
         document.body.classList.add('hide-qos-column');
         updateQosToggle(false);
     } else {
         updateQosToggle(true);
     }
-    
+
+    const showRetained = getCookie('showRetainedColumn');
     if (showRetained === 'false') {
         document.body.classList.add('hide-retained-column');
         updateRetainedToggle(false);
@@ -2796,12 +3274,12 @@ function saveFilterPreferences() {
     const topicFilter = document.getElementById('topicFilter');
     const timeFilter = document.getElementById('timeFilter');
     const limit = document.getElementById('limit');
-    const autoRefresh = document.getElementById('autoRefreshCheckbox');
+    const dbRefreshInterval = document.getElementById('dbRefreshInterval');
     
     if (topicFilter) setCookie('dbTopicFilter', topicFilter.value, 365);
     if (timeFilter) setCookie('dbTimeFilter', timeFilter.value, 365);
     if (limit) setCookie('dbLimit', limit.value, 365);
-    if (autoRefresh) setCookie('dbAutoRefresh', autoRefresh.checked ? '1' : '0', 365);
+    if (dbRefreshInterval) setCookie('dbRefreshInterval', dbRefreshInterval.value, 365);
 }
 
 function saveBrokerFilterPreferences() {
@@ -2820,22 +3298,22 @@ function loadFilterPreferences() {
     const topicFilter = document.getElementById('topicFilter');
     const timeFilter = document.getElementById('timeFilter');
     const limit = document.getElementById('limit');
-    const autoRefresh = document.getElementById('autoRefreshCheckbox');
+    const dbRefreshInterval = document.getElementById('dbRefreshInterval');
     
     const savedTopicFilter = getCookie('dbTopicFilter');
     const savedTimeFilter = getCookie('dbTimeFilter');
     const savedLimit = getCookie('dbLimit');
-    const savedAutoRefresh = getCookie('dbAutoRefresh');
+    const savedDbRefreshInterval = getCookie('dbRefreshInterval');
     
     if (topicFilter && savedTopicFilter !== null) topicFilter.value = savedTopicFilter;
     if (timeFilter && savedTimeFilter !== null) timeFilter.value = savedTimeFilter;
     if (limit && savedLimit !== null) limit.value = savedLimit;
-    if (autoRefresh && savedAutoRefresh !== null) {
-        autoRefresh.checked = savedAutoRefresh === '1';
-        // If auto-refresh was saved as enabled, start the auto-refresh
-        if (autoRefresh.checked) {
+    if (dbRefreshInterval && savedDbRefreshInterval !== null) {
+        dbRefreshInterval.value = savedDbRefreshInterval;
+        const interval = parseInt(savedDbRefreshInterval);
+        if (interval > 0) {
             // Defer to allow page to finish loading
-            setTimeout(() => toggleAutoRefresh(), 200);
+            setTimeout(() => setDbRefreshInterval(interval), 200);
         }
     }
     
@@ -2851,6 +3329,17 @@ function loadFilterPreferences() {
     if (brokerTopicFilter && savedBrokerTopicFilter !== null) brokerTopicFilter.value = savedBrokerTopicFilter;
     if (brokerTimeFilter && savedBrokerTimeFilter !== null) brokerTimeFilter.value = savedBrokerTimeFilter;
     if (brokerLimit && savedBrokerLimit !== null) brokerLimit.value = savedBrokerLimit;
+    
+    // Stats tab refresh interval
+    const statsRefreshDropdown = document.getElementById('statsRefreshInterval');
+    const savedStatsRefresh = getCookie('statsRefreshInterval');
+    if (statsRefreshDropdown && savedStatsRefresh !== null) {
+        statsRefreshDropdown.value = savedStatsRefresh;
+        const interval = parseInt(savedStatsRefresh);
+        if (interval > 0) {
+            setTimeout(() => startStatsAutoRefresh(interval), 200);
+        }
+    }
 }
 
 // =============================================================================
@@ -2861,6 +3350,49 @@ function openAboutModal() {
     closeSettingsMenu();
     const modal = document.getElementById('aboutModal');
     modal.classList.add('active');
+    
+    // Populate component versions
+    loadComponentVersions();
+}
+
+async function loadComponentVersions() {
+    // Mosquitto version from cached $SYS topic or sysTopicValues
+    const mosquittoVersionEl = document.getElementById('aboutMosquittoVersion');
+    const mqVersion = cachedMosquittoVersion || sysTopicValues['$SYS/broker/version'];
+    if (mosquittoVersionEl && mqVersion) {
+        mosquittoVersionEl.textContent = mqVersion;
+    }
+    
+    // Nginx version from Server header
+    try {
+        const response = await fetch('/health');
+        const serverHeader = response.headers.get('Server');
+        const nginxVersionEl = document.getElementById('aboutNginxVersion');
+        if (nginxVersionEl && serverHeader) {
+            // Server header typically contains "nginx/1.x.x"
+            nginxVersionEl.textContent = serverHeader;
+        }
+    } catch (e) {
+        console.error('Failed to get nginx version:', e);
+    }
+    
+    // libSQL version from API (only if logged in to avoid auth dialog)
+    if (isLoggedIn()) {
+        try {
+            const response = await fetch(`${API_BASE}/version`, {
+                headers: getAuthHeaders()
+            });
+            if (response.ok) {
+                const text = await response.text();
+                const libsqlVersionEl = document.getElementById('aboutLibsqlVersion');
+                if (libsqlVersionEl && text) {
+                    libsqlVersionEl.textContent = text.trim();
+                }
+            }
+        } catch (e) {
+            console.error('Failed to get libSQL version:', e);
+        }
+    }
 }
 
 function closeAboutModal() {
@@ -2871,6 +3403,110 @@ function closeAboutModal() {
 function closeAboutOnOverlay(event) {
     if (event.target.classList.contains('modal-overlay')) {
         closeAboutModal();
+    }
+}
+
+// User Account Modal Functions
+let cachedMqttCredentials = null;
+
+async function showUserAccountModal() {
+    const modal = document.getElementById('userAccountModal');
+    modal.classList.add('active');
+    
+    // Clear previous form state
+    document.getElementById('changePasswordForm').reset();
+    document.getElementById('changePasswordError').textContent = '';
+    document.getElementById('changePasswordSuccess').textContent = '';
+    
+    // Load MQTT credentials
+    try {
+        const response = await fetch('/api/mqtt-credentials', {
+            credentials: 'include'
+        });
+        if (response.ok) {
+            cachedMqttCredentials = await response.json();
+            document.getElementById('accountMqttUsername').textContent = cachedMqttCredentials.username;
+            document.getElementById('accountMqttPassword').textContent = '••••••••';
+            document.getElementById('accountMqttPassword').classList.add('password-hidden');
+        }
+    } catch (err) {
+        console.error('Failed to load MQTT credentials:', err);
+    }
+}
+
+function closeUserAccountModal() {
+    const modal = document.getElementById('userAccountModal');
+    modal.classList.remove('active');
+    cachedMqttCredentials = null;
+}
+
+function closeUserAccountOnOverlay(event) {
+    if (event.target.classList.contains('modal-overlay')) {
+        closeUserAccountModal();
+    }
+}
+
+function toggleMqttPasswordVisibility() {
+    const passwordEl = document.getElementById('accountMqttPassword');
+    if (passwordEl.classList.contains('password-hidden')) {
+        passwordEl.textContent = cachedMqttCredentials?.password || '';
+        passwordEl.classList.remove('password-hidden');
+    } else {
+        passwordEl.textContent = '••••••••';
+        passwordEl.classList.add('password-hidden');
+    }
+}
+
+function copyMqttPassword(button) {
+    if (cachedMqttCredentials?.password) {
+        copyToClipboard(cachedMqttCredentials.password, button);
+    }
+}
+
+async function handleChangePassword(event) {
+    event.preventDefault();
+    
+    const currentPassword = document.getElementById('currentPassword').value;
+    const newPassword = document.getElementById('newPassword').value;
+    const confirmNewPassword = document.getElementById('confirmNewPassword').value;
+    const errorEl = document.getElementById('changePasswordError');
+    const successEl = document.getElementById('changePasswordSuccess');
+    
+    errorEl.textContent = '';
+    successEl.textContent = '';
+    
+    if (newPassword !== confirmNewPassword) {
+        errorEl.textContent = 'New passwords do not match';
+        return;
+    }
+    
+    if (newPassword.length < 8) {
+        errorEl.textContent = 'New password must be at least 8 characters';
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                current_password: currentPassword,
+                new_password: newPassword
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            successEl.textContent = 'Password changed successfully';
+            document.getElementById('changePasswordForm').reset();
+        } else {
+            errorEl.textContent = data.error || 'Failed to change password';
+        }
+    } catch (err) {
+        errorEl.textContent = 'Failed to change password';
+        console.error('Change password error:', err);
     }
 }
 
@@ -2947,10 +3583,112 @@ async function loadAppConfig() {
     }
 }
 
+// Detect multi-tenant mode from server or URL
+async function detectMultiTenantMode() {
+    try {
+        // Check if /api/mode endpoint exists (indicates multi-tenant mode)
+        // This endpoint doesn't require auth, avoiding 401 errors in console
+        const modeResponse = await fetch('/api/mode', { 
+            method: 'GET',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        
+        if (modeResponse.ok) {
+            // Multi-tenant mode detected
+            multiTenantMode = true;
+            configureMultiTenantUI();
+            
+            // Try to restore session if cookie exists
+            const sessionResponse = await fetch('/api/session', { 
+                method: 'GET',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            
+            if (sessionResponse.ok) {
+                // Already logged in - restore session
+                const sessionData = await sessionResponse.json();
+                session = {
+                    uid: sessionData.uid,
+                    email: sessionData.email,
+                    topic_prefix: sessionData.topic_prefix,
+                    mqtt_username: sessionData.mqtt_username,
+                    token: sessionData.token,
+                    is_admin: sessionData.is_admin || false
+                };
+                // Reset activity timer on session restore
+                lastActivityTime = Date.now();
+                // Admin users have topic_prefix='#', so don't append '/#'
+                // Avoid double slash if topic_prefix already ends with /
+                if (session.topic_prefix === '#') {
+                    MQTT_TOPIC = '#';
+                } else {
+                    MQTT_TOPIC = session.topic_prefix.endsWith('/') ? session.topic_prefix + '#' : session.topic_prefix + '/#';
+                }
+                updateAuthMenuItem();
+                updateAdminTabVisibility();
+                showTenantBanner();
+                
+                // Initialize MQTT connection for restored session
+                if (!window.mqttConnected) {
+                    initMqttConnection();
+                    window.mqttConnected = true;
+                }
+            }
+            return;
+        }
+    } catch (e) {
+        // Endpoint doesn't exist - standard mode
+    }
+    
+    // Standard mode - no multi-tenant features
+    multiTenantMode = false;
+    configureStandardUI();
+}
+
+// Configure UI for multi-tenant mode
+function configureMultiTenantUI() {
+    // Show email field, hide username field in login modal
+    const multiTenantFields = document.getElementById('multiTenantLoginFields');
+    const standardFields = document.getElementById('standardLoginFields');
+    const signupLink = document.getElementById('signupLink');
+    
+    if (multiTenantFields) multiTenantFields.style.display = 'block';
+    if (standardFields) standardFields.style.display = 'none';
+    if (signupLink) signupLink.style.display = 'block';
+    
+    // Make email required, username not required
+    const emailInput = document.getElementById('loginEmail');
+    const usernameInput = document.getElementById('loginUsername');
+    if (emailInput) emailInput.required = true;
+    if (usernameInput) usernameInput.required = false;
+}
+
+// Configure UI for standard mode
+function configureStandardUI() {
+    // Show username field, hide email field in login modal
+    const multiTenantFields = document.getElementById('multiTenantLoginFields');
+    const standardFields = document.getElementById('standardLoginFields');
+    const signupLink = document.getElementById('signupLink');
+    
+    if (multiTenantFields) multiTenantFields.style.display = 'none';
+    if (standardFields) standardFields.style.display = 'block';
+    if (signupLink) signupLink.style.display = 'none';
+    
+    // Make username required, email not required
+    const emailInput = document.getElementById('loginEmail');
+    const usernameInput = document.getElementById('loginUsername');
+    if (emailInput) emailInput.required = false;
+    if (usernameInput) usernameInput.required = true;
+}
+
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', async () => {
     // Load app configuration first
     loadAppConfig();
+    
+    // Detect multi-tenant mode and configure UI accordingly
+    // This must run before showing login modal
+    await detectMultiTenantMode();
     
     // Restore session from storage if valid (async due to crypto)
     if (await loadSession()) {
@@ -2960,11 +3698,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Load saved filter preferences before loading data
     loadFilterPreferences();
     
-    dbConnState();
-    loadMessages();
+    // Only poll DB and load messages if logged in
+    if (isLoggedIn()) {
+        dbConnState();
+        loadMessages();
+    }
     
-    // Auto-refresh stats every 3 seconds
-    setInterval(dbConnState, 3000);
+    // Auto-refresh stats every 3 seconds (only when logged in)
+    window.dbConnStateInterval = setInterval(() => {
+        if (isLoggedIn()) dbConnState();
+    }, 3000);
     
     // Check session expiry every 30 seconds for auto-logout
     setInterval(checkSessionExpiry, 30 * 1000);
@@ -2986,6 +3729,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     
     // Wire up event listeners
     setupEventListeners();
+    
+    // Show login modal if not logged in
+    if (!isLoggedIn()) {
+        showLoginModal();
+    }
 });
 
 function setupEventListeners() {
@@ -3075,4 +3823,1137 @@ function setupEventListeners() {
             return;
         }
     });
+}
+
+// =============================================================================
+// Admin Tab Functions
+// =============================================================================
+
+// Update admin tab visibility based on user's admin status
+function updateAdminTabVisibility() {
+    const adminTab = document.getElementById('adminTab');
+    if (!adminTab) return;
+    
+    if (session && session.is_admin) {
+        adminTab.style.display = 'inline-block';
+    } else {
+        adminTab.style.display = 'none';
+        // If currently on admin tab, switch to database
+        const adminTabContent = document.getElementById('admin-tab');
+        if (adminTabContent && adminTabContent.classList.contains('active')) {
+            const dbTab = document.querySelector('.tab');
+            if (dbTab) dbTab.click();
+        }
+    }
+}
+
+// Load all users for admin dashboard
+async function loadAdminUsers() {
+    //console.log('loadAdminUsers called, session:', session);
+    
+    if (!session || !session.is_admin) {
+        console.error('Admin access required, is_admin:', session?.is_admin);
+        return;
+    }
+    
+    try {
+        // Use credentials: include to send session cookie
+        const headers = {};
+        if (session.token) {
+            headers['Authorization'] = 'Bearer ' + session.token;
+        }
+        
+        const response = await fetch('/api/admin/users', {
+            credentials: 'include',
+            headers: headers
+        });
+        
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to load users');
+        }
+        
+        const users = await response.json();
+        displayAdminUsers(users);
+        
+        // Update user count
+        const countEl = document.getElementById('adminUserCount');
+        if (countEl) {
+            countEl.textContent = users.length;
+        }
+        
+    } catch (error) {
+        console.error('Failed to load admin users:', error);
+        const tbody = document.querySelector('#admin-users-table tbody');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="7" class="error-cell">Error: ${escapeHtml(error.message)}</td></tr>`;
+        }
+    }
+}
+
+// Display users in admin table
+function displayAdminUsers(users) {
+    const tbody = document.querySelector('#admin-users-table tbody');
+    if (!tbody) return;
+    
+    if (!users || users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="no-results">No users found</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = users.map(user => {
+        const createdAt = user.created_at ? formatTimestamp(new Date(user.created_at)) : '-';
+        const lastLogin = user.last_login_at ? formatTimestamp(new Date(user.last_login_at)) : 'Never';
+        const isAdmin = user.is_admin ? '✓' : '';
+        const isCurrentUser = user.uid === session.uid;
+        
+        return `
+            <tr class="${isCurrentUser ? 'current-user-row' : ''}">
+                <td>${escapeHtml(user.email)}${isCurrentUser ? ' (you)' : ''}</td>
+                <td><code>${escapeHtml(user.uid)}</code></td>
+                <td><code>${escapeHtml(user.mqtt_username)}</code></td>
+                <td>${createdAt}</td>
+                <td>${lastLogin}</td>
+                <td class="admin-badge">${isAdmin}</td>
+                <td class="actions">
+                    ${!isCurrentUser && !user.is_admin ? `
+                        <button class="icon-btn delete-btn" onclick="deleteAdminUser('${escapeHtml(user.uid)}', '${escapeHtml(user.email)}')" title="Delete user">🗑️</button>
+                    ` : ''}
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// Delete a user (admin only)
+async function deleteAdminUser(uid, email) {
+    if (!session || !session.is_admin) {
+        console.error('Admin access required');
+        return;
+    }
+    
+    // Show confirmation modal
+    const confirmMessage = `Are you sure you want to delete user "${email}"?\n\nThis will:\n• Remove their account\n• Delete their MQTT credentials\n• Remove their data\n\nThis action cannot be undone.`;
+    
+    showConfirmModal(confirmMessage, async () => {
+        try {
+            // Use credentials: include to send session cookie
+            const headers = {};
+            if (session.token) {
+                headers['Authorization'] = 'Bearer ' + session.token;
+            }
+            
+            const response = await fetch(`/api/admin/users/${uid}`, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: headers
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to delete user');
+            }
+            
+            // Reload users list
+            loadAdminUsers();
+            
+        } catch (error) {
+            console.error('Failed to delete user:', error);
+            alert('Error deleting user: ' + error.message);
+        }
+    });
+}
+
+// Show confirmation modal
+function showConfirmModal(message, onConfirm) {
+    const modal = document.getElementById('confirmModal');
+    const messageEl = document.getElementById('confirmMessage');
+    
+    if (!modal || !messageEl) return;
+    
+    messageEl.textContent = message;
+    window.confirmModalCallback = onConfirm;
+    modal.classList.add('active');
+}
+
+// Close confirmation modal
+function closeConfirmModal() {
+    const modal = document.getElementById('confirmModal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+    window.confirmModalCallback = null;
+}
+
+// Handle confirm modal overlay click
+function closeConfirmOnOverlay(event) {
+    if (event.target === event.currentTarget) {
+        closeConfirmModal();
+    }
+}
+
+// Execute confirmed action
+function confirmModalAction() {
+    if (window.confirmModalCallback) {
+        window.confirmModalCallback();
+    }
+    closeConfirmModal();
+}
+
+// ==========================================
+// Stats Tab Functions
+// ==========================================
+
+// Stats state
+let statsAutoRefreshInterval = null;
+let statsCharts = {};
+let statsThroughputHistory = { received: [], sent: [], labels: [] };
+let statsConnectionsHistory = { connected: [], subscriptions: [], labels: [] };
+let statsInflightHistory = { queued: [], labels: [] };
+let statsStoreHistory = { count: [], labels: [] };
+const STATS_HISTORY_MAX = 720; // 2 hours at 10-second intervals
+
+// $SYS topic subscription for stats
+let sysTopicValues = {};
+let lastSysMessageTime = 0; // Track when we last received a $SYS message
+
+// Load cached stats history from sessionStorage immediately on script load
+// This must happen before any MQTT messages can trigger chart updates
+(function() {
+    try {
+        const cached = sessionStorage.getItem('statsHistoryCache');
+        if (cached) {
+            const data = JSON.parse(cached);
+            if (data.throughput) statsThroughputHistory = data.throughput;
+            if (data.connections) statsConnectionsHistory = data.connections;
+            if (data.inflight) statsInflightHistory = data.inflight;
+            if (data.store) statsStoreHistory = data.store;
+            if (data.sysTopicValues) sysTopicValues = data.sysTopicValues;
+        }
+    } catch (e) {
+        console.error('Failed to load stats from cache on init:', e);
+    }
+})();
+
+// Load cached stats history from sessionStorage
+function loadStatsFromCache() {
+    try {
+        const cached = sessionStorage.getItem('statsHistoryCache');
+        if (cached) {
+            const data = JSON.parse(cached);
+            if (data.throughput) statsThroughputHistory = data.throughput;
+            if (data.connections) statsConnectionsHistory = data.connections;
+            if (data.inflight) statsInflightHistory = data.inflight;
+            if (data.store) statsStoreHistory = data.store;
+            if (data.sysTopicValues) sysTopicValues = data.sysTopicValues;
+            
+            // Trim to max size in case limit changed
+            trimHistoryToMax();
+        }
+    } catch (e) {
+        console.error('Failed to load stats from cache:', e);
+    }
+}
+
+// Save stats history to sessionStorage
+function saveStatsToCache() {
+    try {
+        const data = {
+            throughput: statsThroughputHistory,
+            connections: statsConnectionsHistory,
+            inflight: statsInflightHistory,
+            store: statsStoreHistory,
+            sysTopicValues: sysTopicValues
+        };
+        sessionStorage.setItem('statsHistoryCache', JSON.stringify(data));
+    } catch (e) {
+        console.error('Failed to save stats to cache:', e);
+    }
+}
+
+// Trim all history arrays to max size
+function trimHistoryToMax() {
+    while (statsThroughputHistory.labels.length > STATS_HISTORY_MAX) {
+        statsThroughputHistory.received.shift();
+        statsThroughputHistory.sent.shift();
+        statsThroughputHistory.labels.shift();
+    }
+    while (statsConnectionsHistory.labels.length > STATS_HISTORY_MAX) {
+        statsConnectionsHistory.connected.shift();
+        statsConnectionsHistory.subscriptions.shift();
+        statsConnectionsHistory.labels.shift();
+    }
+    while (statsInflightHistory.labels.length > STATS_HISTORY_MAX) {
+        statsInflightHistory.queued.shift();
+        statsInflightHistory.labels.shift();
+    }
+    while (statsStoreHistory.labels.length > STATS_HISTORY_MAX) {
+        statsStoreHistory.count.shift();
+        statsStoreHistory.labels.shift();
+    }
+}
+
+// Initialize stats when tab is shown
+function initStats() {
+    // Load cached data from session
+    loadStatsFromCache();
+    
+    if (!statsCharts.throughput) {
+        initStatsCharts();
+    }
+    
+    // Restore charts with cached data
+    restoreChartsFromCache();
+    
+    // Ensure MQTT is connected for $SYS topics
+    // Only init if no client exists at all - don't interrupt reconnection
+    if (isLoggedIn() && !mqttClient) {
+        initMqttConnection();
+        window.mqttConnected = true;
+    }
+    
+    subscribeToSysTopics();
+    refreshStats();
+    
+    // Start auto-refresh based on dropdown value
+    const refreshDropdown = document.getElementById('statsRefreshInterval');
+    if (refreshDropdown) {
+        const interval = parseInt(refreshDropdown.value);
+        if (interval > 0) {
+            startStatsAutoRefresh(interval);
+        }
+    }
+}
+
+// Restore chart data from cached history
+function restoreChartsFromCache() {
+    if (statsCharts.throughput && statsThroughputHistory.labels.length > 0) {
+        statsCharts.throughput.data.labels = statsThroughputHistory.labels;
+        statsCharts.throughput.data.datasets[0].data = statsThroughputHistory.received;
+        statsCharts.throughput.data.datasets[1].data = statsThroughputHistory.sent;
+        statsCharts.throughput.update('none');
+    }
+    if (statsCharts.connections && statsConnectionsHistory.labels.length > 0) {
+        statsCharts.connections.data.labels = statsConnectionsHistory.labels;
+        statsCharts.connections.data.datasets[0].data = statsConnectionsHistory.connected;
+        statsCharts.connections.data.datasets[1].data = statsConnectionsHistory.subscriptions;
+        statsCharts.connections.update('none');
+    }
+    if (statsCharts.inflight && statsInflightHistory.labels.length > 0) {
+        statsCharts.inflight.data.labels = statsInflightHistory.labels;
+        statsCharts.inflight.data.datasets[0].data = statsInflightHistory.queued;
+        statsCharts.inflight.update('none');
+    }
+    if (statsCharts.store && statsStoreHistory.labels.length > 0) {
+        statsCharts.store.data.labels = statsStoreHistory.labels;
+        statsCharts.store.data.datasets[0].data = statsStoreHistory.count;
+        statsCharts.store.update('none');
+    }
+}
+
+// Initialize Chart.js charts
+function initStatsCharts() {
+    const chartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                display: true,
+                position: 'top',
+                labels: {
+                    color: getComputedStyle(document.documentElement).getPropertyValue('--ctp-subtext0').trim(),
+                    boxWidth: 12,
+                    padding: 8
+                }
+            }
+        },
+        scales: {
+            x: {
+                display: true,
+                grid: {
+                    color: getComputedStyle(document.documentElement).getPropertyValue('--ctp-surface0').trim()
+                },
+                ticks: {
+                    color: getComputedStyle(document.documentElement).getPropertyValue('--ctp-overlay0').trim(),
+                    maxRotation: 0,
+                    maxTicksLimit: 10,
+                    autoSkip: true
+                }
+            },
+            y: {
+                display: true,
+                beginAtZero: true,
+                grid: {
+                    color: getComputedStyle(document.documentElement).getPropertyValue('--ctp-surface0').trim()
+                },
+                ticks: {
+                    color: getComputedStyle(document.documentElement).getPropertyValue('--ctp-overlay0').trim()
+                }
+            }
+        }
+    };
+
+    // Throughput chart
+    const throughputCtx = document.getElementById('throughputChart');
+    if (throughputCtx) {
+        statsCharts.throughput = new Chart(throughputCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Received',
+                        data: [],
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-green').trim(),
+                        backgroundColor: 'transparent',
+                        tension: 0.3,
+                        pointRadius: 2,
+                        borderWidth: 1.5
+                    },
+                    {
+                        label: 'Sent',
+                        data: [],
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-blue').trim(),
+                        backgroundColor: 'transparent',
+                        tension: 0.3,
+                        pointRadius: 2,
+                        borderWidth: 1.5
+                    }
+                ]
+            },
+            options: chartOptions
+        });
+    }
+
+    // Connections chart (bar)
+    const connectionsCtx = document.getElementById('connectionsChart');
+    if (connectionsCtx) {
+        statsCharts.connections = new Chart(connectionsCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Connected',
+                        data: [],
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-mauve').trim() + '80',
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-mauve').trim(),
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'Subscriptions',
+                        data: [],
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-teal').trim() + '80',
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-teal').trim(),
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: chartOptions
+        });
+    }
+
+    // Inflight/queued messages chart (bar)
+    const inflightCtx = document.getElementById('inflightChart');
+    if (inflightCtx) {
+        statsCharts.inflight = new Chart(inflightCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Inflight Messages',
+                        data: [],
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-peach').trim() + '80',
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-peach').trim(),
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: chartOptions
+        });
+    }
+
+    // Store messages chart (line)
+    const storeCtx = document.getElementById('storeChart');
+    if (storeCtx) {
+        statsCharts.store = new Chart(storeCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Store Messages',
+                        data: [],
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-yellow').trim(),
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--ctp-yellow').trim() + '20',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 1.5
+                    }
+                ]
+            },
+            options: chartOptions
+        });
+    }
+}
+
+// Subscribe to $SYS topics for broker stats
+function subscribeToSysTopics() {
+    if (!mqttClient || !mqttClient.connected) {
+        return;
+    }
+    
+    // Subscribe to all $SYS topics
+    mqttClient.subscribe('$SYS/#', { qos: 0 }, (err) => {
+        if (err) {
+            console.error('Failed to subscribe to $SYS topics:', err);
+        }
+    });
+}
+
+// Handle incoming $SYS messages
+function handleSysMessage(topic, message) {
+    const value = message.toString();
+    sysTopicValues[topic] = value;
+    lastSysMessageTime = Date.now(); // Track when we last received broker data
+    
+    // Update health card - receiving $SYS messages proves broker is healthy
+    updateMqttHealthCard();
+    
+    // Update UI based on topic
+    updateSysTopicUI(topic, value);
+    
+    // Cache Mosquitto version for About dialog
+    if (topic === '$SYS/broker/version') {
+        cachedMosquittoVersion = value;
+    }
+}
+
+// Update UI with $SYS topic value
+function updateSysTopicUI(topic, value) {
+    const mappings = {
+        '$SYS/broker/clients/connected': 'stat-clients-connected',
+        '$SYS/broker/messages/received': 'stat-messages-received',
+        '$SYS/broker/messages/sent': 'stat-messages-sent',
+        '$SYS/broker/retained messages/count': 'stat-retained',
+        '$SYS/broker/subscriptions/count': 'stat-subscriptions',
+        '$SYS/broker/heap/current': 'stat-heap',
+        '$SYS/broker/version': 'stat-version',
+        '$SYS/broker/uptime': 'stat-uptime',
+        '$SYS/broker/bytes/received': 'stat-bytes-received',
+        '$SYS/broker/bytes/sent': 'stat-bytes-sent',
+        '$SYS/broker/clients/maximum': 'stat-clients-max',
+        '$SYS/broker/clients/total': 'stat-clients-total'
+    };
+    
+    const elementId = mappings[topic];
+    if (elementId) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            // Format values appropriately
+            let displayValue = value;
+            if (elementId === 'stat-heap') {
+                displayValue = formatBytes(parseInt(value));
+            } else if (elementId === 'stat-uptime') {
+                displayValue = formatUptime(parseInt(value));
+            } else if (elementId.includes('bytes')) {
+                displayValue = formatBytes(parseInt(value));
+            } else if (!isNaN(parseInt(value))) {
+                displayValue = parseInt(value).toLocaleString();
+            }
+            element.textContent = displayValue;
+        }
+    }
+    
+    // Update charts with load data
+    if (topic === '$SYS/broker/load/messages/received/1min' || 
+        topic === '$SYS/broker/load/messages/sent/1min') {
+        updateThroughputChart();
+    }
+    if (topic === '$SYS/broker/clients/connected') {
+        updateConnectionsChart();
+    }
+    if (topic === '$SYS/broker/subscriptions/count') {
+        updateConnectionsChart();
+    }
+    if (topic === '$SYS/broker/messages/inflight') {
+        updateInflightChart(parseInt(value));
+    }
+    if (topic === '$SYS/broker/store/messages/count') {
+        updateStoreChart(parseInt(value));
+    }
+}
+
+// Update throughput chart
+function updateThroughputChart() {
+    const received = parseFloat(sysTopicValues['$SYS/broker/load/messages/received/1min'] || 0);
+    const sent = parseFloat(sysTopicValues['$SYS/broker/load/messages/sent/1min'] || 0);
+    const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    statsThroughputHistory.received.push(received);
+    statsThroughputHistory.sent.push(sent);
+    statsThroughputHistory.labels.push(now);
+    
+    // Keep history limited
+    if (statsThroughputHistory.labels.length > STATS_HISTORY_MAX) {
+        statsThroughputHistory.received.shift();
+        statsThroughputHistory.sent.shift();
+        statsThroughputHistory.labels.shift();
+    }
+    
+    if (statsCharts.throughput) {
+        statsCharts.throughput.data.labels = statsThroughputHistory.labels;
+        statsCharts.throughput.data.datasets[0].data = statsThroughputHistory.received;
+        statsCharts.throughput.data.datasets[1].data = statsThroughputHistory.sent;
+        statsCharts.throughput.update('none');
+    }
+    
+    saveStatsToCache();
+}
+
+// Update connections chart
+function updateConnectionsChart() {
+    const connected = parseInt(sysTopicValues['$SYS/broker/clients/connected'] || 0);
+    const subscriptions = parseInt(sysTopicValues['$SYS/broker/subscriptions/count'] || 0);
+    const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    statsConnectionsHistory.connected.push(connected);
+    statsConnectionsHistory.subscriptions.push(subscriptions);
+    statsConnectionsHistory.labels.push(now);
+    
+    // Keep history limited
+    if (statsConnectionsHistory.labels.length > STATS_HISTORY_MAX) {
+        statsConnectionsHistory.connected.shift();
+        statsConnectionsHistory.subscriptions.shift();
+        statsConnectionsHistory.labels.shift();
+    }
+    
+    if (statsCharts.connections) {
+        statsCharts.connections.data.labels = statsConnectionsHistory.labels;
+        statsCharts.connections.data.datasets[0].data = statsConnectionsHistory.connected;
+        statsCharts.connections.data.datasets[1].data = statsConnectionsHistory.subscriptions;
+        statsCharts.connections.update('none');
+    }
+    
+    saveStatsToCache();
+}
+
+// Update inflight/queued messages chart
+function updateInflightChart(queued) {
+    const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    statsInflightHistory.queued.push(queued);
+    statsInflightHistory.labels.push(now);
+    
+    // Keep history limited
+    if (statsInflightHistory.labels.length > STATS_HISTORY_MAX) {
+        statsInflightHistory.queued.shift();
+        statsInflightHistory.labels.shift();
+    }
+    
+    if (statsCharts.inflight) {
+        statsCharts.inflight.data.labels = statsInflightHistory.labels;
+        statsCharts.inflight.data.datasets[0].data = statsInflightHistory.queued;
+        statsCharts.inflight.update('none');
+    }
+    
+    saveStatsToCache();
+}
+
+// Update store messages chart
+function updateStoreChart(count) {
+    const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    statsStoreHistory.count.push(count);
+    statsStoreHistory.labels.push(now);
+    
+    // Keep history limited
+    if (statsStoreHistory.labels.length > STATS_HISTORY_MAX) {
+        statsStoreHistory.count.shift();
+        statsStoreHistory.labels.shift();
+    }
+    
+    if (statsCharts.store) {
+        statsCharts.store.data.labels = statsStoreHistory.labels;
+        statsCharts.store.data.datasets[0].data = statsStoreHistory.count;
+        statsCharts.store.update('none');
+    }
+    
+    saveStatsToCache();
+}
+
+// Format bytes to human readable
+function formatBytes(bytes) {
+    if (bytes === 0 || isNaN(bytes)) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// Format uptime seconds to human readable
+function formatUptime(seconds) {
+    if (isNaN(seconds)) return '-';
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    
+    if (days > 0) {
+        return `${days}d ${hours}h ${minutes}m`;
+    } else if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+    } else {
+        return `${minutes}m`;
+    }
+}
+
+// Refresh all stats
+async function refreshStats() {
+    await Promise.all([
+        refreshHealthStatus(),
+        refreshDatabaseStats(),
+        refreshNginxStats()
+    ]);
+    
+    // Re-subscribe to $SYS topics in case connection was lost
+    subscribeToSysTopics();
+    
+    // Update all charts with current cached values
+    updateAllCharts();
+}
+
+// Update all charts with current $SYS values
+function updateAllCharts() {
+    // Only update if we have data
+    if (Object.keys(sysTopicValues).length === 0) return;
+    
+    updateThroughputChart();
+    updateConnectionsChart();
+    
+    const inflight = parseInt(sysTopicValues['$SYS/broker/messages/inflight'] || 0);
+    updateInflightChart(inflight);
+    
+    const store = parseInt(sysTopicValues['$SYS/broker/store/messages/count'] || 0);
+    updateStoreChart(store);
+}
+
+// Update last refresh timestamp
+function updateStatsTimestamp() {
+    const element = document.getElementById('statsLastUpdate');
+    if (element) {
+        const now = new Date().toLocaleTimeString();
+        element.textContent = `Last updated: ${now}`;
+    }
+}
+
+// Update MQTT health card immediately (called on connection state changes)
+function updateMqttHealthCard() {
+    const mqttCard = document.getElementById('health-mqtt');
+    if (!mqttCard) return;
+    
+    // Consider broker healthy if:
+    // 1. MQTT client is connected, OR
+    // 2. We received fresh $SYS data within the last 30 seconds (broker is up, client reconnecting)
+    const hasFreshData = lastSysMessageTime > 0 && (Date.now() - lastSysMessageTime) < 30000;
+    
+    if (mqttClient && mqttClient.connected) {
+        mqttCard.className = 'health-card health-card-wide healthy';
+    } else if (hasFreshData) {
+        // We have fresh broker data, so broker is healthy even if client is reconnecting
+        mqttCard.className = 'health-card health-card-wide healthy';
+    } else if (mqttClient && mqttClient.reconnecting) {
+        mqttCard.className = 'health-card health-card-wide warning';
+    } else if (mqttClient) {
+        mqttCard.className = 'health-card health-card-wide warning';
+    } else {
+        mqttCard.className = 'health-card health-card-wide unhealthy';
+    }
+}
+
+// Refresh health status checks
+async function refreshHealthStatus() {
+    // MQTT health
+    const mqttCard = document.getElementById('health-mqtt');
+    if (mqttCard) {
+        // Consider broker healthy if:
+        // 1. MQTT client is connected, OR
+        // 2. We received fresh $SYS data within the last 30 seconds
+        const hasFreshData = lastSysMessageTime > 0 && (Date.now() - lastSysMessageTime) < 30000;
+        
+        if (mqttClient && mqttClient.connected) {
+            mqttCard.className = 'health-card health-card-wide healthy';
+        } else if (hasFreshData) {
+            // We have fresh broker data, so broker is healthy even if client is reconnecting
+            mqttCard.className = 'health-card health-card-wide healthy';
+        } else if (mqttClient && mqttClient.reconnecting) {
+            // Client exists and is actively trying to reconnect
+            mqttCard.className = 'health-card health-card-wide warning';
+        } else if (mqttClient) {
+            // Client exists but not connected (might be connecting or temporarily disconnected)
+            mqttCard.className = 'health-card health-card-wide warning';
+        } else {
+            // No client at all
+            mqttCard.className = 'health-card health-card-wide unhealthy';
+        }
+        
+        // Update MQTT metrics from cached $SYS values
+        const uptimeEl = document.getElementById('health-mqtt-uptime');
+        const clientsEl = document.getElementById('health-mqtt-clients');
+        const heapEl = document.getElementById('health-mqtt-heap');
+        const retainedEl = document.getElementById('health-mqtt-retained');
+        
+        if (uptimeEl) {
+            const uptime = sysTopicValues['$SYS/broker/uptime'];
+            uptimeEl.textContent = uptime ? formatUptime(parseInt(uptime)) : '-';
+        }
+        if (clientsEl) {
+            const clients = sysTopicValues['$SYS/broker/clients/connected'];
+            clientsEl.textContent = clients || '-';
+        }
+        if (heapEl) {
+            const heap = sysTopicValues['$SYS/broker/heap/current'];
+            heapEl.textContent = heap ? formatBytes(parseInt(heap)) : '-';
+        }
+        if (retainedEl) {
+            const retained = sysTopicValues['$SYS/broker/retained messages/count'];
+            retainedEl.textContent = retained || '-';
+        }
+    }
+    
+    // Database health
+    const dbCard = document.getElementById('health-db');
+    if (dbCard) {
+        try {
+            const response = await fetch(`${API_BASE}/v1/execute`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ stmt: ['SELECT 1'] })
+            });
+            if (response.ok) {
+                dbCard.className = 'health-card health-card-wide healthy';
+                
+                // Get database size
+                const sizeResponse = await fetch(`${API_BASE}/v1/execute`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ stmt: ['SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()'] })
+                });
+                if (sizeResponse.ok) {
+                    const data = await sizeResponse.json();
+                    const size = data.result?.rows?.[0]?.[0]?.value || 0;
+                    const sizeEl = document.getElementById('health-db-size');
+                    if (sizeEl) sizeEl.textContent = formatBytes(parseInt(size));
+                }
+                
+                // Get total message count
+                const countResponse = await fetch(`${API_BASE}/v1/execute`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ stmt: ['SELECT COUNT(*) FROM msg'] })
+                });
+                if (countResponse.ok) {
+                    const data = await countResponse.json();
+                    const count = data.result?.rows?.[0]?.[0]?.value || 0;
+                    const totalEl = document.getElementById('health-db-total');
+                    if (totalEl) totalEl.textContent = parseInt(count).toLocaleString();
+                }
+                
+                // Get oldest message
+                const oldestResponse = await fetch(`${API_BASE}/v1/execute`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ stmt: ['SELECT MIN(ulid) FROM msg'] })
+                });
+                if (oldestResponse.ok) {
+                    const data = await oldestResponse.json();
+                    const ulid = data.result?.rows?.[0]?.[0]?.value;
+                    const oldestEl = document.getElementById('health-db-oldest');
+                    if (oldestEl) {
+                        if (ulid && ulid.length >= 10) {
+                            const timestampPart = ulid.substring(0, 10).toUpperCase();
+                            let timestamp = 0;
+                            for (let i = 0; i < timestampPart.length; i++) {
+                                const value = ULID_ENCODING.indexOf(timestampPart[i]);
+                                if (value !== -1) {
+                                    timestamp = timestamp * 32 + value;
+                                }
+                            }
+                            oldestEl.textContent = formatRelativeTime(new Date(timestamp));
+                        } else {
+                            oldestEl.textContent = '-';
+                        }
+                    }
+                }
+            } else {
+                dbCard.className = 'health-card health-card-wide unhealthy';
+            }
+        } catch (e) {
+            dbCard.className = 'health-card health-card-wide unhealthy';
+        }
+    }
+    
+    // Nginx health
+    const nginxCard = document.getElementById('health-nginx');
+    if (nginxCard) {
+        try {
+            const response = await fetch('/nginx-status', {
+                headers: getAuthHeaders()
+            });
+            if (response.ok) {
+                nginxCard.className = 'health-card health-card-wide healthy';
+                const text = await response.text();
+                
+                // Parse Active connections
+                const activeMatch = text.match(/Active connections:\s*(\d+)/);
+                const activeEl = document.getElementById('health-nginx-active');
+                if (activeEl && activeMatch) {
+                    activeEl.textContent = activeMatch[1];
+                }
+                
+                // Parse Accepts, handled from stats line
+                const lines = text.split('\n');
+                const statsLine = lines[2]?.trim();
+                if (statsLine) {
+                    const parts = statsLine.split(/\s+/);
+                    if (parts.length >= 2) {
+                        const acceptedEl = document.getElementById('health-nginx-accepted');
+                        const handledEl = document.getElementById('health-nginx-handled');
+                        if (acceptedEl) acceptedEl.textContent = parseInt(parts[0]).toLocaleString();
+                        if (handledEl) handledEl.textContent = parseInt(parts[1]).toLocaleString();
+                    }
+                }
+            } else {
+                nginxCard.className = 'health-card health-card-wide warning';
+            }
+        } catch (e) {
+            nginxCard.className = 'health-card health-card-wide unhealthy';
+        }
+    }
+}
+
+// Refresh database stats
+async function refreshDatabaseStats() {
+    if (!isLoggedIn()) return;
+    
+    try {
+        // Get total message count
+        const countResponse = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ stmt: ['SELECT COUNT(*) FROM msg'] })
+        });
+        if (countResponse.ok) {
+            const data = await countResponse.json();
+            const count = data.result?.rows?.[0]?.[0]?.value || 0;
+            document.getElementById('stat-db-messages').textContent = parseInt(count).toLocaleString();
+        }
+        
+        // Get unique topic count
+        const topicsResponse = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ stmt: ['SELECT COUNT(DISTINCT topic) FROM msg'] })
+        });
+        if (topicsResponse.ok) {
+            const data = await topicsResponse.json();
+            const count = data.result?.rows?.[0]?.[0]?.value || 0;
+            document.getElementById('stat-db-topics').textContent = parseInt(count).toLocaleString();
+        }
+        
+        // Get database size (approximate from page_count * page_size)
+        const sizeResponse = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ stmt: ['SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()'] })
+        });
+        if (sizeResponse.ok) {
+            const data = await sizeResponse.json();
+            const size = data.result?.rows?.[0]?.[0]?.value || 0;
+            document.getElementById('stat-db-size').textContent = formatBytes(parseInt(size));
+        }
+        
+        // Get oldest message timestamp
+        const oldestResponse = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ stmt: ['SELECT MIN(ulid) FROM msg'] })
+        });
+        if (oldestResponse.ok) {
+            const data = await oldestResponse.json();
+            const ulid = data.result?.rows?.[0]?.[0]?.value;
+            if (ulid && ulid.length >= 10) {
+                // Extract timestamp from ULID (first 10 chars are base32-encoded milliseconds)
+                const timestampPart = ulid.substring(0, 10).toUpperCase();
+                let timestamp = 0;
+                for (let i = 0; i < timestampPart.length; i++) {
+                    const value = ULID_ENCODING.indexOf(timestampPart[i]);
+                    if (value !== -1) {
+                        timestamp = timestamp * 32 + value;
+                    }
+                }
+                const date = new Date(timestamp);
+                document.getElementById('stat-db-oldest').textContent = formatRelativeTime(date);
+            } else {
+                document.getElementById('stat-db-oldest').textContent = 'No data';
+            }
+        }
+        
+        // Get top topics
+        const topTopicsResponse = await fetch(`${API_BASE}/v1/execute`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ stmt: ['SELECT topic, COUNT(*) as cnt FROM msg GROUP BY topic ORDER BY cnt DESC LIMIT 10'] })
+        });
+        if (topTopicsResponse.ok) {
+            const data = await topTopicsResponse.json();
+            const rows = data.result?.rows || [];
+            displayTopTopics(rows);
+        }
+        
+    } catch (e) {
+        console.error('Failed to refresh database stats:', e);
+    }
+}
+
+// Display top topics list
+function displayTopTopics(rows) {
+    const container = document.getElementById('top-topics-list');
+    if (!container) return;
+    
+    if (rows.length === 0) {
+        container.innerHTML = '<div class="loading">No data</div>';
+        return;
+    }
+    
+    let html = '';
+    rows.forEach((row, index) => {
+        const topic = row[0]?.value || 'unknown';
+        const count = parseInt(row[1]?.value || 0);
+        
+        html += `
+            <div class="top-topic-card" title="${topic}">
+                <span class="top-topic-rank">${index + 1}</span>
+                <span class="top-topic-name">${topic}</span>
+                <span class="top-topic-count">${count.toLocaleString()}</span>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+// Format relative time (e.g., "2 days")
+function formatRelativeTime(date) {
+    const now = new Date();
+    const diff = now - date;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 30) {
+        return date.toLocaleDateString();
+    } else if (days > 0) {
+        return `${days} day${days > 1 ? 's' : ''}`;
+    } else if (hours > 0) {
+        return `${hours} hour${hours > 1 ? 's' : ''}`;
+    } else if (minutes > 0) {
+        return `${minutes} min${minutes > 1 ? 's' : ''}`;
+    } else {
+        return 'Just now';
+    }
+}
+
+// Refresh nginx stats
+async function refreshNginxStats() {
+    if (!isLoggedIn()) return;
+    
+    const nginxCard = document.getElementById('health-nginx');
+    
+    try {
+        const response = await fetch('/nginx-status', {
+            headers: getAuthHeaders()
+        });
+        
+        if (response.ok) {
+            const text = await response.text();
+            parseNginxStatus(text);
+            // Update health card status
+            if (nginxCard) {
+                nginxCard.className = 'health-card health-card-wide healthy';
+            }
+        } else {
+            // Update health card status on failure
+            if (nginxCard) {
+                nginxCard.className = 'health-card health-card-wide warning';
+            }
+        }
+    } catch (e) {
+        console.error('Failed to refresh nginx stats:', e);
+        // Update health card status on error
+        if (nginxCard) {
+            nginxCard.className = 'health-card health-card-wide unhealthy';
+        }
+    }
+}
+
+// Parse nginx stub_status output
+function parseNginxStatus(text) {
+    // Format:
+    // Active connections: 2 
+    // server accepts handled requests
+    //  10 10 20 
+    // Reading: 0 Writing: 1 Waiting: 1 
+    
+    const lines = text.split('\n');
+    
+    // Active connections
+    const activeMatch = text.match(/Active connections:\s*(\d+)/);
+    if (activeMatch) {
+        document.getElementById('stat-nginx-active').textContent = activeMatch[1];
+    }
+    
+    // Accepts, handled, requests
+    const statsLine = lines[2]?.trim();
+    if (statsLine) {
+        const parts = statsLine.split(/\s+/);
+        if (parts.length >= 3) {
+            document.getElementById('stat-nginx-accepts').textContent = parseInt(parts[0]).toLocaleString();
+            document.getElementById('stat-nginx-handled').textContent = parseInt(parts[1]).toLocaleString();
+            document.getElementById('stat-nginx-requests').textContent = parseInt(parts[2]).toLocaleString();
+        }
+    }
+}
+
+// Set auto-refresh interval from dropdown
+function setStatsRefreshInterval(intervalMs) {
+    stopStatsAutoRefresh();
+    
+    const interval = parseInt(intervalMs);
+    setCookie('statsRefreshInterval', interval.toString(), 365);
+    
+    if (interval > 0) {
+        startStatsAutoRefresh(interval);
+    }
+}
+
+// Start auto-refresh interval
+function startStatsAutoRefresh(intervalMs = 10000) {
+    stopStatsAutoRefresh(); // Clear any existing interval
+    statsAutoRefreshInterval = setInterval(() => {
+        // Only refresh if stats tab is active
+        const statsTab = document.getElementById('stats-tab');
+        if (statsTab && statsTab.classList.contains('active')) {
+            refreshStats();
+        }
+    }, intervalMs);
+}
+
+// Stop auto-refresh interval
+function stopStatsAutoRefresh() {
+    if (statsAutoRefreshInterval) {
+        clearInterval(statsAutoRefreshInterval);
+        statsAutoRefreshInterval = null;
+    }
 }

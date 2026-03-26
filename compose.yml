@@ -38,6 +38,8 @@ services:
       # Credentials via environment variables (alternative to secrets file)
       - MQBASE_USER=${MQBASE_USER:-admin:admin}
       - MQBASE_MQTT_USER=${MQBASE_MQTT_USER:-admin:admin}
+      # Use mosquitto-test.conf for testing (set MOSQUITTO_CONFIG to switch)
+      - MOSQUITTO_CONFIG=${MOSQUITTO_CONFIG:-/mosquitto/config/mosquitto.conf}
     restart: unless-stopped
 
 volumes:

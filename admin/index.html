@@ -6,7 +6,8 @@
     <title>mqBase Admin</title>
     <link id="favicon" rel="icon" type="image/png" href="">
     <link rel="stylesheet" href="/admin/styles.css">
-    <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/mqtt@5.15.0/dist/mqtt.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="/admin/app.js" defer></script>
 </head>
 <body>
@@ -45,9 +46,17 @@
                 </div>
                 <div class="modal-body">
                     <form id="loginForm" onsubmit="handleLogin(event)">
-                        <div class="form-group">
-                            <label for="loginUsername">Username</label>
-                            <input type="text" id="loginUsername" name="username" autocomplete="username" required>
+                        <div id="multiTenantLoginFields">
+                            <div class="form-group">
+                                <label for="loginEmail">Email</label>
+                                <input type="email" id="loginEmail" name="email" autocomplete="email" required>
+                            </div>
+                        </div>
+                        <div id="standardLoginFields">
+                            <div class="form-group">
+                                <label for="loginUsername">Username</label>
+                                <input type="text" id="loginUsername" name="username" autocomplete="username">
+                            </div>
                         </div>
                         <div class="form-group">
                             <label for="loginPassword">Password</label>
@@ -62,6 +71,42 @@
                         <div id="loginError" class="login-error"></div>
                         <div class="modal-buttons">
                             <button type="submit" class="modal-btn modal-btn-login">Login</button>
+                        </div>
+                        <div id="signupLink" class="auth-link" style="display: none;">
+                            Don't have an account? <a href="#" onclick="showSignupModal(); return false;">Sign up</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Signup Modal (Multi-Tenant Mode Only) -->
+        <div id="signupModal" class="modal-overlay">
+            <div class="modal-content login-modal">
+                <div class="modal-header">
+                    <h2>📝 Create Account</h2>
+                </div>
+                <div class="modal-body">
+                    <form id="signupForm" onsubmit="handleSignup(event)">
+                        <div class="form-group">
+                            <label for="signupEmail">Email</label>
+                            <input type="email" id="signupEmail" name="email" autocomplete="email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="signupPassword">Password</label>
+                            <input type="password" id="signupPassword" name="password" autocomplete="new-password" required minlength="8">
+                        </div>
+                        <div class="form-group">
+                            <label for="signupPasswordConfirm">Confirm Password</label>
+                            <input type="password" id="signupPasswordConfirm" name="passwordConfirm" autocomplete="new-password" required minlength="8">
+                        </div>
+                        <div id="signupError" class="login-error"></div>
+                        <div id="signupSuccess" class="signup-success"></div>
+                        <div class="modal-buttons">
+                            <button type="submit" class="modal-btn modal-btn-signup">Sign Up</button>
+                        </div>
+                        <div class="auth-link">
+                            Already have an account? <a href="#" onclick="showLoginModal(); return false;">Login</a>
                         </div>
                     </form>
                 </div>
@@ -90,6 +135,25 @@
                         <span class="about-label">License:</span>
                         <span class="about-value">Apache License 2.0</span>
                     </div>
+                    <div class="about-row">
+                        <span class="about-label">Documentation:</span>
+                        <a href="https://docs.mqbase.io" target="_blank" class="about-link">docs.mqbase.io</a>
+                    </div>
+                    <div class="about-separator"></div>
+                    <div class="about-components">
+                        <div class="component-row">
+                            <a href="https://github.com/eclipse-mosquitto/mosquitto" target="_blank" class="about-link">Mosquitto</a>
+                            <span id="aboutMosquittoVersion" class="component-version">-</span>
+                        </div>
+                        <div class="component-row">
+                            <a href="https://github.com/tursodatabase/libsql" target="_blank" class="about-link">libSQL</a>
+                            <span id="aboutLibsqlVersion" class="component-version">-</span>
+                        </div>
+                        <div class="component-row">
+                            <a href="https://github.com/nginx/nginx" target="_blank" class="about-link">Nginx</a>
+                            <span id="aboutNginxVersion" class="component-version">-</span>
+                        </div>
+                    </div>
                     <div class="about-separator"></div>
                     <div class="about-shortcuts">
                         <div class="about-label">Keyboard Shortcuts:</div>
@@ -103,14 +167,71 @@
                 </div>
             </div>
         </div>
+
+        <!-- User Account Modal (Multi-Tenant Mode Only) -->
+        <div id="userAccountModal" class="modal-overlay" onclick="closeUserAccountOnOverlay(event)">
+            <div class="modal-content user-account-modal">
+                <div class="modal-header">
+                    <h2>👤 User Account</h2>
+                    <button class="modal-close" onclick="closeUserAccountModal()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="user-account-section">
+                        <h3>MQTT Credentials</h3>
+                        <div class="credentials-grid">
+                            <div class="credential-row">
+                                <span class="credential-label">Username:</span>
+                                <code id="accountMqttUsername" class="credential-value">-</code>
+                                <button class="copy-btn" onclick="copyToClipboard(document.getElementById('accountMqttUsername').textContent, this)" title="Copy">📋</button>
+                            </div>
+                            <div class="credential-row">
+                                <span class="credential-label">Password:</span>
+                                <code id="accountMqttPassword" class="credential-value password-hidden">••••••••</code>
+                                <button class="toggle-btn" onclick="toggleMqttPasswordVisibility()" title="Show/Hide">👁</button>
+                                <button class="copy-btn" onclick="copyMqttPassword(this)" title="Copy">📋</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="user-account-separator"></div>
+                    <div class="user-account-section">
+                        <h3>Change Password</h3>
+                        <form id="changePasswordForm" onsubmit="handleChangePassword(event)">
+                            <div class="form-group">
+                                <label for="currentPassword">Current Password</label>
+                                <input type="password" id="currentPassword" name="currentPassword" autocomplete="current-password" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="newPassword">New Password</label>
+                                <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" required minlength="8">
+                            </div>
+                            <div class="form-group">
+                                <label for="confirmNewPassword">Confirm New Password</label>
+                                <input type="password" id="confirmNewPassword" name="confirmNewPassword" autocomplete="new-password" required minlength="8">
+                            </div>
+                            <div id="changePasswordError" class="login-error"></div>
+                            <div id="changePasswordSuccess" class="signup-success"></div>
+                            <div class="modal-buttons">
+                                <button type="submit" class="modal-btn modal-btn-login">Change Password</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Main Layout: Content + Sidebar -->
         <div class="main-layout">
             <div class="main-content">
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('database')"><span id="dbStatusIcon" class="tab-status">⚫</span> Database</button>
-            <button class="tab" onclick="switchTab('broker')"><span id="mqttStatusIcon" class="tab-status">⚫</span> Broker</button>
-            <button class="tab" onclick="switchTab('acl')">ACL</button>
-        </div>
+                <div class="tabs-row">
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('database')"><span id="dbStatusIcon" class="tab-status-dot"></span> Database</button>
+                        <button class="tab" onclick="switchTab('broker')"><span id="mqttStatusIcon" class="tab-status-dot"></span> Broker</button>
+                        <button class="tab" onclick="switchTab('acl')">ACL</button>
+                        <button class="tab" onclick="switchTab('stats')">Stats</button>
+                        <button id="adminTab" class="tab" onclick="switchTab('admin')" style="display: none;">Users</button>
+                    </div>
+                    <div id="tenantBanner" class="account-banner" style="display: none;"></div>
+                </div>
         <div id="database-tab" class="tab-content active">
         <div class="controls">
             <div class="controls-left">
@@ -141,11 +262,22 @@
                         <option value="1000">1000</option>
                     </select>
                 </div>
-                <div class="control-group checkbox-group">
-                    <span class="checkbox-label">Auto-Refresh</span>
-                    <input type="checkbox" id="autoRefreshCheckbox" onchange="toggleAutoRefresh()">
+                <div class="control-group">
+                    <label>Refresh</label>
+                    <div class="refresh-control">
+                        <button class="refresh-btn" onclick="loadMessages()" title="Refresh now">
+                            <span class="refresh-icon">↻</span>
+                        </button>
+                        <select id="dbRefreshInterval" class="refresh-dropdown" onchange="setDbRefreshInterval(this.value)">
+                            <option value="0" selected>Off</option>
+                            <option value="5000">5s</option>
+                            <option value="10000">10s</option>
+                            <option value="30000">30s</option>
+                            <option value="60000">1m</option>
+                            <option value="300000">5m</option>
+                        </select>
+                    </div>
                 </div>
-                <button onclick="loadMessages()">Apply</button>
                 <button onclick="clearFilter()">Clear</button>
                 <div class="separator-vertical"></div>
                 <div class="control-group flex-grow">
@@ -309,6 +441,110 @@
             </div>
         </div>
     </div>
+    <div id="admin-tab" class="tab-content">
+        <div class="controls">
+            <div class="controls-left">
+                <button onclick="loadAdminUsers()">Refresh</button>
+            </div>
+        </div>
+        <div class="content">
+            <table class="acl-table" id="admin-users-table">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>UID</th>
+                        <th>MQTT Username</th>
+                        <th>Created</th>
+                        <th>Last Login</th>
+                        <th>Admin</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    <!-- Stats Tab -->
+    <div id="stats-tab" class="tab-content">
+        <div class="controls">
+            <div class="controls-left">
+                <div class="control-group">
+                    <label>Refresh</label>
+                    <div class="refresh-control">
+                        <button class="refresh-btn" onclick="refreshStats()" title="Refresh now">
+                            <span class="refresh-icon">↻</span>
+                        </button>
+                        <select id="statsRefreshInterval" class="refresh-dropdown" onchange="setStatsRefreshInterval(this.value)">
+                            <option value="0">Off</option>                        <option value="5000">5s</option>                        <option value="10000" selected>10s</option>
+                            <option value="30000">30s</option>
+                            <option value="60000">1m</option>
+                            <option value="300000">5m</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="stats-content">
+            <!-- Health Status Section -->
+            <div class="stats-section">
+                <h3 class="stats-section-title">System Health</h3>
+                <div class="health-grid">
+                    <div class="health-card health-card-wide" id="health-db">
+                        <div class="health-indicator"></div>
+                        <div class="health-info">
+                            <span class="health-name">Database</span>
+                            <span class="health-metric">Size: <span id="health-db-size">-</span></span>
+                            <span class="health-metric">Total: <span id="health-db-total">-</span></span>
+                            <span class="health-metric">Oldest: <span id="health-db-oldest">-</span></span>
+                        </div>
+                    </div>
+                    <div class="health-card health-card-wide" id="health-mqtt">
+                        <div class="health-indicator"></div>
+                        <div class="health-info">
+                            <span class="health-name">Broker</span>
+                            <span class="health-metric">Uptime: <span id="health-mqtt-uptime">-</span></span>
+                            <span class="health-metric">Connected: <span id="health-mqtt-clients">-</span></span>
+                            <span class="health-metric">Heap: <span id="health-mqtt-heap">-</span></span>
+                            <span class="health-metric">Retained: <span id="health-mqtt-retained">-</span></span>
+                        </div>
+                    </div>
+                    <div class="health-card health-card-wide" id="health-nginx">
+                        <div class="health-indicator"></div>
+                        <div class="health-info">
+                            <span class="health-name">Web Server</span>
+                            <span class="health-metric">Active: <span id="health-nginx-active">-</span></span>
+                            <span class="health-metric">Accepted: <span id="health-nginx-accepted">-</span></span>
+                            <span class="health-metric">Handled: <span id="health-nginx-handled">-</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Broker Stats Section -->
+            <div class="stats-section">
+                <h3 class="stats-section-title">MQTT Broker</h3>
+                <div class="stats-charts-grid">
+                    <div class="chart-container">
+                        <h4>Message Throughput (per minute)</h4>
+                        <canvas id="throughputChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h4>Client Connections & Subscriptions</h4>
+                        <canvas id="connectionsChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h4>Inflight (awaiting ACK)</h4>
+                        <canvas id="inflightChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h4>Store (retained + offline queues)</h4>
+                        <canvas id="storeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
 </div>
             </div> <!-- end main-content -->
             <!-- Settings Sidebar -->
@@ -365,6 +601,9 @@
                     </div>
                 </div>
                 <div class="menu-separator"></div>
+                <a href="https://docs.mqbase.io" target="_blank" class="menu-item menu-link">
+                    Online Docs
+                </a>
                 <div class="menu-item" onclick="openAboutModal()">
                     About
                 </div>

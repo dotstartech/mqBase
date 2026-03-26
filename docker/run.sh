@@ -39,7 +39,7 @@ restart_service() {
                 fi
                 ;;
             mosquitto)
-                /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf &
+                /usr/sbin/mosquitto -c "$MOSQUITTO_CONFIG" &
                 MOSQUITTO_PID=$!
                 sleep 1
                 if kill -0 $MOSQUITTO_PID 2>/dev/null; then
@@ -195,11 +195,17 @@ if ! kill -0 $SQLD_PID 2>/dev/null; then
 fi
 
 # Start mosquitto in foreground as the main process
-echo "Starting mosquitto..."
+# Use MOSQUITTO_CONFIG env var or default to mosquitto.conf
+MOSQUITTO_CONFIG="${MOSQUITTO_CONFIG:-/mosquitto/config/mosquitto.conf}"
+echo "Starting mosquitto with config: $MOSQUITTO_CONFIG"
 # Fix permissions on mosquitto.db if it exists (prevent world-readable warning)
 chmod 0700 /mosquitto/data/mosquitto.db 2>/dev/null || true
-/usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf &
+/usr/sbin/mosquitto -c "$MOSQUITTO_CONFIG" &
 MOSQUITTO_PID=$!
+
+# Wait for Mosquitto to create dynsec.json, then fix permissions for auth-proxy access
+sleep 2
+chmod 644 /mosquitto/config/dynsec.json 2>/dev/null || true
 
 # Monitor all processes - attempt restart before shutdown
 while true; do

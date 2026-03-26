@@ -93,6 +93,9 @@ load_credentials() {
 
 # Create credential files for nginx and web UI
 setup_credential_files() {
+	# Remove existing files to handle restart case
+	rm -f /tmp/mqtt-credentials.json /tmp/htpasswd 2>/dev/null || true
+	
 	# Parse MQBASE_MQTT_USER (format: username:password) for web client JSON
 	local mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
 	local mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
@@ -108,6 +111,66 @@ setup_credential_files() {
 	chmod 644 /tmp/htpasswd
 }
 
+# Sync MQTT credentials into dynsec.json before Mosquitto starts
+# This ensures the password set via MQBASE_MQTT_USER is applied to the broker
+sync_mqtt_password() {
+	local dynsec="/mosquitto/config/dynsec.json"
+	[ -f "$dynsec" ] || return 0
+	
+	local mqtt_username mqtt_password
+	mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
+	mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
+	
+	# Generate random 12 bytes of salt as hex (24 hex chars)
+	# Using hex avoids null byte issues that break shell variables
+	local salt_hex salt_b64
+	salt_hex=$(head -c 12 /dev/urandom | xxd -p | tr -d '\n')
+	
+	# Convert hex salt to base64 for storage in dynsec.json
+	salt_b64=$(echo "$salt_hex" | xxd -r -p | base64 | tr -d '\n')
+	
+	# Compute PBKDF2-SHA512 hash matching Mosquitto dynsec format:
+	#   - 64-byte key, SHA-512, 101 iterations
+	local hash_hex
+	hash_hex=$(openssl kdf -keylen 64 \
+		-kdfopt digest:SHA512 \
+		-kdfopt "pass:${mqtt_password}" \
+		-kdfopt "hexsalt:${salt_hex}" \
+		-kdfopt iter:101 \
+		PBKDF2 2>/dev/null | tr -d ' :\n')
+	
+	if [ -z "$hash_hex" ]; then
+		echo "WARNING: Failed to compute PBKDF2 hash, MQTT password not synced"
+		return 1
+	fi
+	
+	# Convert hex hash to base64 (matching dynsec.json format)
+	local hash_b64
+	hash_b64=$(echo "$hash_hex" | xxd -r -p | base64 | tr -d '\n')
+	
+	# Patch the password and salt for the target user in dynsec.json
+	# Uses awk to find the matching username block and replace password + salt
+	awk -v user="$mqtt_username" -v newhash="$hash_b64" -v newsalt="$salt_b64" '
+	BEGIN { in_target = 0 }
+	/"username"/ {
+		# Check if this is the target user
+		if (index($0, "\"" user "\"") > 0) in_target = 1
+		else in_target = 0
+	}
+	in_target && /"password"/ {
+		sub(/:[ \t]*"[^"]*"/, ": \"" newhash "\"")
+	}
+	in_target && /"salt"/ {
+		sub(/:[ \t]*"[^"]*"/, ": \"" newsalt "\"")
+		in_target = 0
+	}
+	{ print }
+	' "$dynsec" > "${dynsec}.tmp" && mv "${dynsec}.tmp" "$dynsec"
+	
+	chown admin:admin "$dynsec"
+	echo "MQTT password synced to dynsec.json for user: $mqtt_username"
+}
+
 # =============================================================================
 # Main Entrypoint
 # =============================================================================
@@ -115,10 +178,18 @@ setup_credential_files() {
 user="$(id -u)"
 if [ "$user" = '0' ]; then
 	# Ensure mosquitto directories exist
-	mkdir -p /mosquitto/data /mosquitto/log /mosquitto/config
+	mkdir -p /mosquitto/data /mosquitto/log
 	
-	# Set ownership for writable directories only (skip read-only mounted files like TLS certs)
-	chown -R admin:admin /mosquitto/data /mosquitto/log /mosquitto/config 2>/dev/null || true
+	# Set ownership for writable directories only
+	# NOTE: We deliberately skip /mosquitto/config to preserve host file ownership
+	# when the config directory is bind-mounted from the host
+	chown -R admin:admin /mosquitto/data /mosquitto/log 2>/dev/null || true
+	
+	# If dynsec.json exists and is writable, ensure admin owns it
+	# (needed for Mosquitto dynamic security updates)
+	if [ -w /mosquitto/config/dynsec.json ]; then
+		chown admin:admin /mosquitto/config/dynsec.json 2>/dev/null || true
+	fi
 	
 	# Ensure proper permissions for data directory (sqld needs write access)
 	chmod -R 755 /mosquitto/data
@@ -134,6 +205,9 @@ if [ "$user" = '0' ]; then
 	# Create credential files for nginx and web UI
 	setup_credential_files
 	
+	# Sync MQTT password into dynsec.json
+	sync_mqtt_password
+	
 	# Create app config JSON from environment variables
 	# These come from mqbase.properties via env_file in compose.yml
 	app_version="${version:-}"
@@ -142,6 +216,8 @@ if [ "$user" = '0' ]; then
 	app_favicon="${favicon:-}"
 	
 	# Create JSON file with version, title, logo, and favicon (empty values if not set)
+	# Remove existing file first to handle container restart (file may be owned by different user)
+	rm -f /tmp/app-config.json 2>/dev/null || true
 	echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
 	chown admin:admin /tmp/app-config.json
 	chmod 644 /tmp/app-config.json

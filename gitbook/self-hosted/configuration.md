@@ -189,7 +189,7 @@ mqBase uses Mosquitto's Dynamic Security plugin for authentication and authoriza
 | Username | Password | Access |
 | -------- | -------- | ------ |
 | `admin`  | `admin`  | Full access to all topics including `$CONTROL` and `$SYS` |
-| `test`   | `test`   | Restricted to `+/test/#` topics only |
+| `test`   | `test`   | Restricted to `test/#` topics only |
 
 ### Managing ACL via Admin UI
 

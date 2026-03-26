@@ -1,123 +1,133 @@
 {
-	"defaultACLAccess": {
-		"publishClientSend": false,
-		"publishClientReceive": true,
-		"subscribe": false,
-		"unsubscribe": true
+	"defaultACLAccess":	{
+		"publishClientSend":	false,
+		"publishClientReceive":	true,
+		"subscribe":	false,
+		"unsubscribe":	true
 	},
-	"clients": [
-		{
-			"username": "admin",
-			"textname": "Admin user",
-			"textdescription": "Full system administrator with access to all topics and dynsec control",
-			"roles": [
-				{
-					"rolename": "admin"
-				}
-			],
-			"password": "Cpjr6V/ZGTbVzcPYnnALm973H4LtbxQW10tCpI1uOiOfl8emjfDPgl35tx8nAS1tGJjlqe49jS++2QCopC7TZQ==",
-			"salt": "Bafe72HfbDzKIegp",
-			"iterations": 101
-		},
-		{
-			"username": "test",
-			"textname": "Test user",
-			"textdescription": "Test account for running integration tests. Can publish/subscribe to +/test/# topics.",
-			"roles": [
-				{
-					"rolename": "test"
-				}
-			],
-			"password": "KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
-			"salt": "44X4aE1jpXETPNNq",
-			"iterations": 101
-		}
-	],
-	"groups": [],
-	"roles": [
-		{
-			"rolename": "admin",
-			"textdescription": "Full administrative access to all topics including $CONTROL and $SYS",
-			"acls": [
-				{
-					"acltype": "publishClientSend",
-					"topic": "#",
-					"priority": 1,
-					"allow": true
-				},
-				{
-					"acltype": "publishClientSend",
-					"topic": "$CONTROL/dynamic-security/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "publishClientReceive",
-					"topic": "$CONTROL/dynamic-security/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "publishClientReceive",
-					"topic": "$SYS/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "publishClientReceive",
-					"topic": "#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "subscribePattern",
-					"topic": "$CONTROL/dynamic-security/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "subscribePattern",
-					"topic": "$SYS/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "subscribePattern",
-					"topic": "#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "unsubscribePattern",
-					"topic": "#",
-					"priority": 0,
-					"allow": true
-				}
-			]
-		},
-		{
-			"rolename": "test",
-			"textdescription": "Test role for integration tests. Allows publish/subscribe to +/test/# topics only.",
-			"acls": [
-				{
-					"acltype": "publishClientSend",
-					"topic": "+/test/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "subscribePattern",
-					"topic": "+/test/#",
-					"priority": 0,
-					"allow": true
-				},
-				{
-					"acltype": "unsubscribePattern",
-					"topic": "#",
-					"priority": 0,
-					"allow": true
-				}
-			]
-		}
-	]
+	"clients":	[{
+			"username":	"admin",
+			"textname":	"Admin user",
+			"textdescription":	"Full system administrator with access to all topics and dynsec control",
+			"roles":	[{
+					"rolename":	"admin"
+				}],
+			"password": "7mOlzof+l4et4zjMTlNW9+YSu52f2BF06Deg7ko4aXlyWFta4EoTMOi3+JBIl2bfD5le4qiL2uLAS2sPNdCuog==",
+			"salt": "FvFrHtFoETaJ5vg3",
+			"iterations":	101
+		}, {
+			"username":	"test",
+			"textname":	"Test user",
+			"textdescription":	"Test account for running integration tests. Can publish/subscribe to test/# topics.",
+			"roles":	[{
+					"rolename":	"test"
+				}],
+			"password":	"KrRcFIxGY/i2K7daEt7MFKJI/FfP4NZ/9uHJLAl2rgChO+5E08aL9Zz99NQixIDWZr9kxhzAHMkh57abmXok9w==",
+			"salt":	"44X4aE1jpXETPNNq",
+			"iterations":	101
+		}, {
+			"username":	"guest",
+			"textname":	"Guest user",
+			"textdescription":	"Guest account with limited access. Can publish/subscribe to guest/# topics only.",
+			"roles":	[{
+					"rolename":	"guest"
+				}],
+			"password":	"r5OASeEXvtVSYSPZsW1HemYcIEuRyk9ekdRsEsYW/C13/QzPAtJytfZyIpiK+z7bK8KK2UQ81F2bcFvnXtM5wQ==",
+			"salt":	"Yll1PXnVTPIfxpw9",
+			"iterations":	101
+		}],
+	"groups":	[],
+	"roles":	[{
+			"rolename":	"admin",
+			"textdescription":	"Full administrative access to all topics including $CONTROL and $SYS",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"#",
+					"priority":	1,
+					"allow":	true
+				}, {
+					"acltype":	"publishClientSend",
+					"topic":	"$CONTROL/dynamic-security/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"publishClientReceive",
+					"topic":	"$CONTROL/dynamic-security/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"publishClientReceive",
+					"topic":	"$SYS/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"publishClientReceive",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"$CONTROL/dynamic-security/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"$SYS/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"test",
+			"textdescription":	"Test role for integration tests. Allows publish/subscribe to test/# topics only.",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"test/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"test/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}, {
+			"rolename":	"guest",
+			"textdescription":	"Guest role with limited access. Allows publish/subscribe to guest/# topics only.",
+			"acls":	[{
+					"acltype":	"publishClientSend",
+					"topic":	"guest/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"publishClientReceive",
+					"topic":	"guest/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"subscribePattern",
+					"topic":	"guest/#",
+					"priority":	0,
+					"allow":	true
+				}, {
+					"acltype":	"unsubscribePattern",
+					"topic":	"#",
+					"priority":	0,
+					"allow":	true
+				}]
+		}]
 }

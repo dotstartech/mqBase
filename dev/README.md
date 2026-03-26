@@ -21,12 +21,39 @@ The test script will automatically detect which tools are available and skip tes
 
 ```bash
 # Builds the Docker image with version tag from mqbase.properties
-./dev/build.sh
+./docker/build.sh
 # Deploys the service to Docker Swarm
-./dev/deploy.sh
-# Runs integration tests (MQTT/TCP and WebSocket)
+./docker/deploy.sh
+```
+
+### Running Tests
+
+Tests require the `mosquitto-test.conf` configuration which has topic exclusion patterns enabled. Start mqbase with the test config using the `MOSQUITTO_CONFIG` environment variable:
+
+**Simple mode (single container):**
+```bash
+# Start with test config
+MOSQUITTO_CONFIG=/mosquitto/config/mosquitto-test.conf docker compose up -d
+
+# Run tests
 ./dev/test.sh
 ```
+
+**Multi-tenant mode (with auth-proxy):**
+```bash
+# Start with test config
+MOSQUITTO_CONFIG=/mosquitto/config/mosquitto-test.conf docker compose -f compose.multi-tenant.yml up -d
+
+# Run tests
+./dev/test.sh
+```
+
+### Configuration Files
+
+| File | Description |
+|------|-------------|
+| `mosquitto/config/mosquitto.conf` | Production config (no exclusion patterns) |
+| `mosquitto/config/mosquitto-test.conf` | Test config with exclusion patterns: `cmd/#`, `test/exclude/#` |
 
 ---
 

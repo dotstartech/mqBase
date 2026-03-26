@@ -1,8 +1,6 @@
 FROM debian:trixie AS builder
 
-ENV VERSION=2.0.22 \
-    LWS_VERSION=4.2.1 \
-    LWS_SHA256=842da21f73ccba2be59e680de10a8cce7928313048750eb6ad73b6fa50763c51 \
+ENV VERSION=2.1.0 \
     NGINX_VERSION=1.26.3
 
 COPY plugins/sql/libsql_plugin.c /tmp/libsql_plugin.c
@@ -11,39 +9,15 @@ COPY docker/mqbase-init.c /tmp/mqbase-init.c
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
-        cmake \
-        wget \
         ca-certificates \
         libssl-dev \
         libcjson-dev \
         libsqlite3-dev \
+        libedit-dev \
         libpcre2-dev \
         zlib1g-dev \
         curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Build libwebsockets (static)
-RUN wget https://github.com/warmcat/libwebsockets/archive/v${LWS_VERSION}.tar.gz -O /tmp/lws.tar.gz \
-    && echo "$LWS_SHA256  /tmp/lws.tar.gz" | sha256sum -c - \
-    && mkdir -p /build/lws \
-    && tar --strip=1 -xf /tmp/lws.tar.gz -C /build/lws \
-    && rm /tmp/lws.tar.gz \
-    && cd /build/lws \
-    && cmake . \
-        -DCMAKE_BUILD_TYPE=MinSizeRel \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DDISABLE_WERROR=ON \
-        -DLWS_IPV6=ON \
-        -DLWS_WITHOUT_BUILTIN_GETIFADDRS=ON \
-        -DLWS_WITHOUT_CLIENT=ON \
-        -DLWS_WITHOUT_EXTENSIONS=ON \
-        -DLWS_WITHOUT_TESTAPPS=ON \
-        -DLWS_WITH_EXTERNAL_POLL=ON \
-        -DLWS_WITH_HTTP2=OFF \
-        -DLWS_WITH_SHARED=OFF \
-        -DLWS_WITH_ZIP_FOPS=OFF \
-        -DLWS_WITH_ZLIB=OFF \
-    && make -j "$(nproc)"
 
 # Build Mosquitto with plugins
 RUN curl -o /tmp/mosq.tar.gz https://mosquitto.org/files/source/mosquitto-${VERSION}.tar.gz \
@@ -55,10 +29,10 @@ RUN curl -o /tmp/mosq.tar.gz https://mosquitto.org/files/source/mosquitto-${VERS
     && mv /tmp/Makefile /build/mosq/plugins/sql/. \
     && sed -i 's/DIRS=/DIRS=sql /' /build/mosq/plugins/Makefile \
     && make -C /build/mosq -j "$(nproc)" \
-        CFLAGS="-Wall -O2 -I/build/lws/include -I/build" \
-        LDFLAGS="-L/build/lws/lib -lm" \
+        CFLAGS="-Wall -O2" \
         WITH_ADNS=no \
         WITH_DOCS=no \
+        WITH_HTTP_API=no \
         WITH_SHARED_LIBRARIES=yes \
         WITH_SRV=no \
         WITH_STRIP=yes \

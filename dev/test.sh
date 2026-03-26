@@ -6,9 +6,13 @@
 # - Section A: MQTT/TCP tests (requires mosquitto_pub/mosquitto_sub)
 # - Section B: WebSocket tests (requires Node.js and MQTT.js CLI)
 #
-# Exclusion patterns: cmd/# (transient commands not persisted)
+# Exclusion patterns: cmd/#, test/exclude/# (transient commands not persisted)
 #
-# Test user can only publish to +/test/# topics (see mosquitto/config/dynsec.json)
+# Test user can only publish to test/# topics (see mosquitto/config/dynsec.json)
+#
+# IMPORTANT: For tests to pass, mqbase must be started with mosquitto-test.conf:
+#   Simple mode:       MOSQUITTO_CONFIG=/mosquitto/config/mosquitto-test.conf docker compose up -d
+#   Multi-tenant mode: MOSQUITTO_CONFIG=/mosquitto/config/mosquitto-test.conf docker compose -f compose.multi-tenant.yml up -d
 
 set -e
 
@@ -19,10 +23,26 @@ USER="${MQTT_USER:-test}"
 PASS="${MQTT_PASS:-test}"
 ADMIN_USER="${MQTT_ADMIN_USER:-admin}"
 ADMIN_PASS="${MQTT_ADMIN_PASS:-admin}"
-DB_URL="${DB_URL:-http://127.0.0.1:8080/db-admin}"
+ADMIN_URL="${ADMIN_URL:-http://127.0.0.1:8080}"
+
+# Auto-detect multi-tenant mode by checking if /api/mode endpoint exists
+# In multi-tenant mode, db-admin and other admin endpoints are on port 8081 (mqbase internal nginx)
+MULTI_TENANT=false
+if curl -s --connect-timeout 1 "http://127.0.0.1:8080/api/mode" | grep -q "multi-tenant" 2>/dev/null; then
+    MULTI_TENANT=true
+    INTERNAL_URL="http://127.0.0.1:8081"
+    echo "Detected multi-tenant mode, using internal URL on port 8081"
+fi
+
+if [ -z "$DB_URL" ]; then
+    if [ "$MULTI_TENANT" = true ]; then
+        DB_URL="${INTERNAL_URL}/db-admin"
+    else
+        DB_URL="http://127.0.0.1:8080/db-admin"
+    fi
+fi
 DB_USER="${DB_USER:-admin}"
 DB_PASS="${DB_PASS:-admin}"
-ADMIN_URL="${ADMIN_URL:-http://127.0.0.1:8080}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -212,6 +232,43 @@ if ! $HAS_MOSQUITTO && ! $HAS_MQTTJS; then
     exit 1
 fi
 
+# Wait for mqbase to be ready (health check)
+echo ""
+echo "Waiting for mqbase to be ready..."
+MAX_RETRIES=30
+RETRY=0
+while [ $RETRY -lt $MAX_RETRIES ]; do
+    if curl -s --connect-timeout 1 "$ADMIN_URL/health" | grep -q "OK" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} nginx is ready"
+        break
+    fi
+    RETRY=$((RETRY + 1))
+    if [ $RETRY -eq $MAX_RETRIES ]; then
+        echo -e "${RED}Error: mqbase not responding after ${MAX_RETRIES}s${NC}"
+        exit 1
+    fi
+    sleep 1
+done
+
+# Wait for database to be ready
+RETRY=0
+while [ $RETRY -lt $MAX_RETRIES ]; do
+    DB_RESPONSE=$(curl -s -X POST "$DB_URL/v1/execute" \
+        -u "$DB_USER:$DB_PASS" \
+        -H "Content-Type: application/json" \
+        -d '{"stmt": ["SELECT 1"]}' 2>/dev/null)
+    if echo "$DB_RESPONSE" | grep -q '"value":"1"' 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} database is ready"
+        break
+    fi
+    RETRY=$((RETRY + 1))
+    if [ $RETRY -eq $MAX_RETRIES ]; then
+        echo -e "${RED}Error: database not responding after ${MAX_RETRIES}s${NC}"
+        exit 1
+    fi
+    sleep 1
+done
+
 # Get initial count
 INITIAL_COUNT=$(db_count)
 log_info "Initial message count: $INITIAL_COUNT"
@@ -233,11 +290,11 @@ if $HAS_MOSQUITTO; then
 log_section "Section 1: Basic Message Persistence"
 
 # -----------------------------------------
-# Test 1: Persistent message (data/test/...)
+# Test 1: Persistent message (test/...)
 # -----------------------------------------
 echo ""
 echo "--- Test 1: Persistent message ---"
-TOPIC_PERSIST="data/test/sensor_$TEST_ID"
+TOPIC_PERSIST="test/sensor_$TEST_ID"
 MSG_PERSIST="{\"test_id\":\"$TEST_ID\",\"type\":\"persistent\",\"value\":42}"
 
 log_info "Publishing to $TOPIC_PERSIST (should be persisted)"
@@ -252,14 +309,14 @@ else
 fi
 
 # -----------------------------------------
-# Test 2: Transient message (cmd/test/...)
+# Test 2: Transient message (test/exclude/...)
 # -----------------------------------------
 echo ""
 echo "--- Test 2: Transient message (excluded) ---"
-TOPIC_TRANSIENT="cmd/test/action_$TEST_ID"
+TOPIC_TRANSIENT="test/exclude/action_$TEST_ID"
 MSG_TRANSIENT="{\"test_id\":\"$TEST_ID\",\"type\":\"transient\",\"action\":\"ping\"}"
 
-log_info "Publishing to $TOPIC_TRANSIENT (should NOT be persisted - excluded by cmd/#)"
+log_info "Publishing to $TOPIC_TRANSIENT (should NOT be persisted - excluded by test/exclude/#)"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_TRANSIENT" -m "$MSG_TRANSIENT" -q 0
 
 sleep 0.5
@@ -276,7 +333,7 @@ fi
 echo ""
 echo "--- Test 3: Multiple persistent messages (batch insert) ---"
 for i in 1 2 3 4 5; do
-    TOPIC="data/test/batch_${TEST_ID}_$i"
+    TOPIC="test/batch_${TEST_ID}_$i"
     MSG="{\"test_id\":\"$TEST_ID\",\"batch\":$i}"
     mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC" -m "$MSG" -q 1
 done
@@ -327,7 +384,7 @@ log_section "Section 2: QoS and Retain Flags"
 # -----------------------------------------
 echo ""
 echo "--- Test 5: QoS 0 message ---"
-TOPIC_QOS0="data/test/qos0_$TEST_ID"
+TOPIC_QOS0="test/qos0_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS0" -m '{"qos":0}' -q 0
 sleep 0.5
 
@@ -344,7 +401,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 6: QoS 1 message ---"
-TOPIC_QOS1="data/test/qos1_$TEST_ID"
+TOPIC_QOS1="test/qos1_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS1" -m '{"qos":1}' -q 1
 sleep 0.5
 
@@ -361,7 +418,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 7: QoS 2 message ---"
-TOPIC_QOS2="data/test/qos2_$TEST_ID"
+TOPIC_QOS2="test/qos2_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_QOS2" -m '{"qos":2}' -q 2
 sleep 0.5
 
@@ -378,7 +435,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 8: Retained message flag ---"
-TOPIC_RETAIN="data/test/retain_$TEST_ID"
+TOPIC_RETAIN="test/retain_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_RETAIN" -m '{"retained":true}' -q 1 -r
 sleep 0.5
 
@@ -395,7 +452,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 9: Non-retained message flag ---"
-TOPIC_NO_RETAIN="data/test/no_retain_$TEST_ID"
+TOPIC_NO_RETAIN="test/no_retain_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_NO_RETAIN" -m '{"retained":false}' -q 1
 sleep 0.5
 
@@ -417,7 +474,7 @@ log_section "Section 3: Delete Operations"
 # -----------------------------------------
 echo ""
 echo "--- Test 10: Delete with ULID property ---"
-TOPIC_DELETE_ULID="data/test/delete_ulid_$TEST_ID"
+TOPIC_DELETE_ULID="test/delete_ulid_$TEST_ID"
 
 log_info "Publishing first retained message"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_DELETE_ULID" -m '{"msg":"first"}' -q 1 -r -V 5
@@ -452,7 +509,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 11: Delete without ULID (fallback) ---"
-TOPIC_DELETE_FALLBACK="data/test/delete_fallback_$TEST_ID"
+TOPIC_DELETE_FALLBACK="test/delete_fallback_$TEST_ID"
 
 log_info "Publishing retained message"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_DELETE_FALLBACK" -m '{"msg":"to_delete"}' -q 1 -r -V 5
@@ -481,7 +538,7 @@ log_section "Section 4: ULID Generation and Ordering"
 # -----------------------------------------
 echo ""
 echo "--- Test 12: ULID uniqueness ---"
-TOPIC_ULID_TEST="data/test/ulid_unique_$TEST_ID"
+TOPIC_ULID_TEST="test/ulid_unique_$TEST_ID"
 
 for i in 1 2 3; do
     mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_ULID_TEST" -m "{\"seq\":$i}" -q 1
@@ -593,7 +650,11 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 20: MQTT credentials endpoint ---"
-RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$ADMIN_URL/mqtt-credentials")
+if [ "$MULTI_TENANT" = true ]; then
+    RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$INTERNAL_URL/mqtt-credentials")
+else
+    RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$ADMIN_URL/mqtt-credentials")
+fi
 if [[ "$RESPONSE" == *"username"* ]] && [[ "$RESPONSE" == *"password"* ]]; then
     log_pass "/mqtt-credentials returns credentials"
 else
@@ -605,7 +666,11 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 21: Broker config endpoint ---"
-RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$ADMIN_URL/broker-config")
+if [ "$MULTI_TENANT" = true ]; then
+    RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$INTERNAL_URL/broker-config")
+else
+    RESPONSE=$(curl -s -u "$DB_USER:$DB_PASS" "$ADMIN_URL/broker-config")
+fi
 if [[ "$RESPONSE" == *"clients"* ]] || [[ "$RESPONSE" == *"roles"* ]]; then
     log_pass "/broker-config returns dynsec config"
 else
@@ -635,7 +700,7 @@ log_section "Section 6: Edge Cases and Special Characters"
 # -----------------------------------------
 echo ""
 echo "--- Test 23: Special characters in payload ---"
-TOPIC_SPECIAL="data/test/special_$TEST_ID"
+TOPIC_SPECIAL="test/special_$TEST_ID"
 MSG_SPECIAL='{"text":"Hello \"World\"","emoji":"🚀","unicode":"日本語"}'
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_SPECIAL" -m "$MSG_SPECIAL" -q 1
 sleep 0.5
@@ -652,7 +717,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 24: Large payload ---"
-TOPIC_LARGE="data/test/large_$TEST_ID"
+TOPIC_LARGE="test/large_$TEST_ID"
 LARGE_PAYLOAD=$(python3 -c "import json; print(json.dumps({'data': 'x' * 10000}))")
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_LARGE" -m "$LARGE_PAYLOAD" -q 1
 sleep 0.5
@@ -669,7 +734,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 25: Multi-level topic ---"
-TOPIC_MULTI="data/test/level1/level2/level3/level4_$TEST_ID"
+TOPIC_MULTI="test/level1/level2/level3/level4_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_MULTI" -m '{"deep":true}' -q 1
 sleep 0.5
 
@@ -685,7 +750,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 26: Topic with numbers ---"
-TOPIC_NUMBERS="data/test/device123/sensor456_$TEST_ID"
+TOPIC_NUMBERS="test/device123/sensor456_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_NUMBERS" -m '{"num":true}' -q 1
 sleep 0.5
 
@@ -701,7 +766,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 27: Empty payload ---"
-TOPIC_EMPTY="data/test/empty_payload_$TEST_ID"
+TOPIC_EMPTY="test/empty_payload_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_EMPTY" -m '' -q 1
 sleep 0.5
 
@@ -722,7 +787,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 28: Binary payload ---"
-TOPIC_BINARY="data/test/binary_payload_$TEST_ID"
+TOPIC_BINARY="test/binary_payload_$TEST_ID"
 # Generate 100 bytes of random binary data and send it
 BINARY_DATA=$(head -c 100 /dev/urandom | base64)
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_BINARY" -m "$BINARY_DATA" -q 1
@@ -741,55 +806,55 @@ fi
 log_section "Section 7: Topic Exclusion Patterns"
 
 # -----------------------------------------
-# Test 29: cmd/# exclusion (multi-level)
+# Test 29: test/exclude/# exclusion (multi-level)
 # -----------------------------------------
 echo ""
-echo "--- Test 29: cmd/# exclusion (multi-level) ---"
-TOPIC_CMD_DEEP="cmd/test/deep/nested/action_$TEST_ID"
+echo "--- Test 29: test/exclude/# exclusion (multi-level) ---"
+TOPIC_CMD_DEEP="test/exclude/deep/nested/action_$TEST_ID"
 COUNT_BEFORE=$(db_count)
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_CMD_DEEP" -m '{"excluded":true}' -q 0
 sleep 0.5
 COUNT_AFTER=$(db_count)
 
 if [ "$COUNT_AFTER" -eq "$COUNT_BEFORE" ]; then
-    log_pass "Deep cmd topic correctly excluded"
+    log_pass "Deep excluded topic correctly excluded"
 else
-    log_fail "Deep cmd topic was persisted (should be excluded)"
+    log_fail "Deep excluded topic was persisted (should be excluded)"
 fi
 
 # -----------------------------------------
-# Test 30: +/test/exclude/# exclusion pattern
+# Test 30: test/exclude/# exclusion pattern
 # -----------------------------------------
 echo ""
-echo "--- Test 30: +/test/exclude/# exclusion pattern ---"
-# mosquitto.conf has: plugin_opt_exclude_topics cmd/#,+/test/exclude/#
-TOPIC_EXCL_PATTERN="data/test/exclude/sensor_$TEST_ID"
+echo "--- Test 30: test/exclude/# exclusion pattern ---"
+# mosquitto.conf has: plugin_opt_exclude_topics cmd/#,test/exclude/#
+TOPIC_EXCL_PATTERN="test/exclude/sensor_$TEST_ID"
 COUNT_BEFORE=$(db_count)
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_EXCL_PATTERN" -m '{"should_exclude":true}' -q 1
 sleep 0.5
 COUNT_AFTER=$(db_count)
 
 if [ "$COUNT_AFTER" -eq "$COUNT_BEFORE" ]; then
-    log_pass "+/test/exclude/# pattern correctly excluded"
+    log_pass "test/exclude/# pattern correctly excluded"
 else
-    log_fail "+/test/exclude/# pattern was persisted (should be excluded)"
+    log_fail "test/exclude/# pattern was persisted (should be excluded)"
 fi
 
 # -----------------------------------------
-# Test 31: data/test/# NOT excluded
+# Test 31: test/# NOT excluded
 # -----------------------------------------
 echo ""
-echo "--- Test 31: data/test/# NOT excluded ---"
-TOPIC_DATA="data/test/should_persist_$TEST_ID"
+echo "--- Test 31: test/# NOT excluded ---"
+TOPIC_DATA="test/should_persist_$TEST_ID"
 COUNT_BEFORE=$(db_count)
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_DATA" -m '{"persist":true}' -q 1
 sleep 0.5
 COUNT_AFTER=$(db_count)
 
 if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then
-    log_pass "data/test topic correctly persisted"
+    log_pass "test/ topic correctly persisted"
 else
-    log_fail "data/test topic was excluded (should persist)"
+    log_fail "test/ topic was excluded (should persist)"
 fi
 
 # =========================================================================
@@ -802,7 +867,7 @@ log_section "Section 8: ULID Timestamp Validation"
 # -----------------------------------------
 echo ""
 echo "--- Test 32: ULID timestamp is recent ---"
-TOPIC_TS="data/test/timestamp_$TEST_ID"
+TOPIC_TS="test/timestamp_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" -t "$TOPIC_TS" -m '{"ts_test":true}' -q 1
 sleep 0.5
 
@@ -847,7 +912,7 @@ log_section "Section 9: Concurrent Messages"
 # -----------------------------------------
 echo ""
 echo "--- Test 33: Rapid fire messages (20 messages) ---"
-TOPIC_RAPID="data/test/rapid_$TEST_ID"
+TOPIC_RAPID="test/rapid_$TEST_ID"
 COUNT_BEFORE=$(db_count)
 
 for i in $(seq 1 20); do
@@ -875,7 +940,7 @@ log_section "Section 10: MQTT User Properties (Headers)"
 # -----------------------------------------
 echo ""
 echo "--- Test 34: User properties stored as headers ---"
-TOPIC_HEADERS="data/test/headers_$TEST_ID"
+TOPIC_HEADERS="test/headers_$TEST_ID"
 # mosquitto_pub -D option adds user properties
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
     -t "$TOPIC_HEADERS" -m '{"test":"headers"}' -q 1 \
@@ -897,7 +962,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 35: Message without user properties ---"
-TOPIC_NO_HEADERS="data/test/noheaders_$TEST_ID"
+TOPIC_NO_HEADERS="test/noheaders_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
     -t "$TOPIC_NO_HEADERS" -m '{"test":"no headers"}' -q 1
 sleep 0.5
@@ -916,7 +981,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 36: Excluded headers are not stored ---"
-TOPIC_EXCL_HEADERS="data/test/excl_headers_$TEST_ID"
+TOPIC_EXCL_HEADERS="test/excl_headers_$TEST_ID"
 # Send message with both included and excluded headers
 # mosquitto.conf has: plugin_opt_exclude_headers header-to-exclude,another-header
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
@@ -945,7 +1010,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test 37: Multiple headers stored correctly ---"
-TOPIC_MULTI_HEADERS="data/test/multi_headers_$TEST_ID"
+TOPIC_MULTI_HEADERS="test/multi_headers_$TEST_ID"
 mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "$PASS" \
     -t "$TOPIC_MULTI_HEADERS" -m '{"test":"multi headers"}' -q 1 \
     -D PUBLISH user-property "tag" "sensor" \
@@ -975,7 +1040,7 @@ log_section "Section 11: Security and Authentication"
 # -----------------------------------------
 echo ""
 echo "--- Test 38: Invalid credentials rejected ---"
-TOPIC_INVALID="data/test/invalid_auth_$TEST_ID"
+TOPIC_INVALID="test/invalid_auth_$TEST_ID"
 
 # Try to publish with wrong password (should fail)
 if mosquitto_pub -h "$BROKER" -p "$PORT" -u "$USER" -P "wrongpassword" -t "$TOPIC_INVALID" -m '{"should":"fail"}' -q 1 2>/dev/null; then
@@ -1038,7 +1103,7 @@ echo ""
 echo "--- Test WS-1: WebSocket connection test ---"
 log_info "Testing WebSocket connection to ws://$BROKER:$WS_PORT"
 
-TOPIC_WS1="data/test/ws_connect_$TEST_ID"
+TOPIC_WS1="test/ws_connect_$TEST_ID"
 MSG_WS1="{\"test_id\":\"$TEST_ID\",\"type\":\"ws_connection_test\"}"
 
 if $MQTT_CLI pub $WS_OPTS -t "$TOPIC_WS1" -m "$MSG_WS1" 2>/dev/null; then
@@ -1061,7 +1126,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test WS-2: WebSocket publish with QoS 1 ---"
-TOPIC_WS2="data/test/ws_qos1_$TEST_ID"
+TOPIC_WS2="test/ws_qos1_$TEST_ID"
 MSG_WS2="{\"test_id\":\"$TEST_ID\",\"qos\":1}"
 
 log_info "Publishing with QoS 1 via WebSocket"
@@ -1084,7 +1149,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test WS-3: WebSocket publish with retained flag ---"
-TOPIC_WS3="data/test/ws_retained_$TEST_ID"
+TOPIC_WS3="test/ws_retained_$TEST_ID"
 MSG_WS3="{\"test_id\":\"$TEST_ID\",\"retained\":true}"
 
 log_info "Publishing retained message via WebSocket"
@@ -1112,7 +1177,7 @@ log_section "Section 13: Cross-Protocol Message Flow"
 # -----------------------------------------
 echo ""
 echo "--- Test WS-4: Cross-protocol (MQTT -> WebSocket) ---"
-TOPIC_WS4="data/test/ws_cross_$TEST_ID"
+TOPIC_WS4="test/ws_cross_$TEST_ID"
 MSG_WS4="{\"test_id\":\"$TEST_ID\",\"direction\":\"mqtt_to_ws\"}"
 RECEIVED_FILE="/tmp/ws_test_${TEST_ID}.txt"
 
@@ -1144,7 +1209,7 @@ fi
 # -----------------------------------------
 echo ""
 echo "--- Test WS-5: Cross-protocol (WebSocket -> MQTT) ---"
-TOPIC_WS5="data/test/ws_reverse_$TEST_ID"
+TOPIC_WS5="test/ws_reverse_$TEST_ID"
 MSG_WS5="{\"test_id\":\"$TEST_ID\",\"direction\":\"ws_to_mqtt\"}"
 RECEIVED_FILE="/tmp/ws_test2_${TEST_ID}.txt"
 
@@ -1178,8 +1243,8 @@ log_section "Section 14: WebSocket Topic Exclusion"
 # Test WS-6: Excluded topic via WebSocket
 # -----------------------------------------
 echo ""
-echo "--- Test WS-6: Excluded topic (cmd/#) via WebSocket ---"
-TOPIC_WS6="cmd/test/ws_excluded_$TEST_ID"
+echo "--- Test WS-6: Excluded topic (test/exclude/#) via WebSocket ---"
+TOPIC_WS6="test/exclude/ws_excluded_$TEST_ID"
 MSG_WS6="{\"test_id\":\"$TEST_ID\",\"excluded\":true}"
 
 log_info "Publishing to excluded topic via WebSocket"
@@ -1207,7 +1272,7 @@ BATCH_COUNT=10
 log_info "Publishing $BATCH_COUNT messages rapidly via WebSocket..."
 
 for i in $(seq 1 $BATCH_COUNT); do
-    TOPIC="data/test/ws_batch_${TEST_ID}_$i"
+    TOPIC="test/ws_batch_${TEST_ID}_$i"
     MSG="{\"test_id\":\"$TEST_ID\",\"batch\":$i}"
     $MQTT_CLI pub $WS_OPTS -t "$TOPIC" -m "$MSG" 2>/dev/null &
 done
@@ -1217,7 +1282,7 @@ sleep 1
 
 PERSISTED=0
 for i in $(seq 1 $BATCH_COUNT); do
-    TOPIC="data/test/ws_batch_${TEST_ID}_$i"
+    TOPIC="test/ws_batch_${TEST_ID}_$i"
     COUNT=$(db_find_topic "$TOPIC")
     if [ "$COUNT" -ge 1 ]; then
         PERSISTED=$((PERSISTED + 1))

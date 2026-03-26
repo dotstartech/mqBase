@@ -140,9 +140,13 @@ favicon=admin/logo.png
 | `logo` | Path to logo image displayed in the header (optional, no logo if empty) |
 | `favicon` | Path to favicon displayed in the browser tab (optional, no icon if empty) |
 
-The `dynsec.json` file defines the Mosquitto dynamic security configuration with two users:
-- `admin:admin` — Full access to all topics (for admin UI)
-- `test:test` — Restricted access to `+/test/#` topics (for testing)
+The `dynsec.json` file defines the Mosquitto dynamic security configuration with default users:
+
+| Username | Password | Access |
+|----------|----------|--------|
+| `admin`  | `admin`  | Full access to all topics (`#`, `$CONTROL/#`, `$SYS/#`) |
+| `test`   | `test`   | Restricted to `test/#` topics (for integration testing) |
+| `guest`  | `guest`  | Restricted to `guest/#` topics (for demos) |
 
 To enable TLS termination inside the Mosquitto broker, mount your TLS certificate and key to `/mosquitto/security/` (e.g., `server.crt` and `server.key`) and uncomment the `certfile`/`keyfile` lines in [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf). For mutual TLS (mTLS) with client certificates, also configure the `cafile` and `require_certificate` options.
 
@@ -230,5 +234,7 @@ The web admin interface supports the following keyboard shortcuts for improved p
 
 This project uses the following open source libraries:
 
+- [MQTT.js](https://github.com/mqttjs/MQTT.js) - MQTT client library written in JavaScript for node.js and the browser
+- [Chart.js](https://github.com/chartjs/Chart.js) - Simple yet flexible JavaScript charting for designers & developers
 - [Catppuccin](https://github.com/catppuccin/catppuccin) — Soothing pastel color scheme for the admin UI
 - [ulid-c](https://github.com/skeeto/ulid-c) — C implementation of ULID (Universally Unique Lexicographically Sortable Identifier)

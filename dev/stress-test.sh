@@ -10,7 +10,21 @@ BROKER="${MQTT_BROKER:-127.0.0.1}"
 PORT="${MQTT_PORT:-1883}"
 USER="${MQTT_USER:-test}"
 PASS="${MQTT_PASS:-test}"
-DB_URL="${DB_URL:-http://127.0.0.1:8080/db-admin}"
+
+# Auto-detect multi-tenant mode by checking if /api/mode endpoint exists
+# In multi-tenant mode, db-admin uses the internal mqbase port 8081
+MULTI_TENANT=false
+if curl -s --connect-timeout 1 "http://127.0.0.1:8080/api/mode" | grep -q "multi-tenant" 2>/dev/null; then
+    MULTI_TENANT=true
+fi
+
+if [ -z "$DB_URL" ]; then
+    if [ "$MULTI_TENANT" = true ]; then
+        DB_URL="http://127.0.0.1:8081/db-admin"
+    else
+        DB_URL="http://127.0.0.1:8080/db-admin"
+    fi
+fi
 DB_USER="${DB_USER:-admin}"
 DB_PASS="${DB_PASS:-admin}"
 
@@ -22,7 +36,7 @@ QOS=0
 RETAINED=false
 MEASURE_LATENCY=false
 SHOW_SAMPLES=false
-TOPIC_PREFIX="data/test/stress"
+TOPIC_PREFIX="test/stress"
 
 # Colors for output
 RED='\033[0;31m'
