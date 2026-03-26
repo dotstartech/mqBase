@@ -273,8 +273,11 @@ jobs:
           echo "Pulling new image..."
           sudo docker compose -f compose.prod.yml pull
           
-          # Restart with new image
-          echo "Restarting container..."
+          # Stop and remove existing container, then start fresh
+          echo "Stopping existing container..."
+          sudo docker compose -f compose.prod.yml down --remove-orphans || true
+          
+          echo "Starting new container..."
           sudo docker compose -f compose.prod.yml up -d
           
           # Wait for container to be healthy
