@@ -267,6 +267,35 @@ int copy_file(const char *src, const char *dst) {
     return 0;
 }
 
+#define DYNSEC_FILE "/mosquitto/config/dynsec.json"
+
+/* Seed dynsec.json from a Docker secret or mounted file (see MQBASE_DYNSEC_SEED / MQBASE_DYNSEC_SEED_MODE).
+ * Secrets are mounted read-only, but the dynamic security plugin needs to write its config file. */
+void seed_dynsec(void) {
+    const char *seed = getenv("MQBASE_DYNSEC_SEED");
+    const char *mode = getenv("MQBASE_DYNSEC_SEED_MODE");
+    struct stat st;
+
+    if (!seed || !seed[0]) seed = "/run/secrets/dynsec.json";
+    if (!mode || !mode[0]) mode = "always";
+    if (stat(seed, &st) != 0) return;
+
+    if (strcmp(mode, "init") == 0) {
+        if (stat(DYNSEC_FILE, &st) == 0 && st.st_size > 0) {
+            fprintf(stderr, "mqbase-init: Dynamic security config exists, seed %s not applied (MQBASE_DYNSEC_SEED_MODE=init)\n", seed);
+            return;
+        }
+    } else if (strcmp(mode, "always") != 0) {
+        fprintf(stderr, "mqbase-init: WARNING: Unknown MQBASE_DYNSEC_SEED_MODE '%s', using 'always'\n", mode);
+    }
+
+    if (copy_file(seed, DYNSEC_FILE) == 0) {
+        fprintf(stderr, "mqbase-init: Dynamic security config seeded from %s\n", seed);
+    } else {
+        fprintf(stderr, "mqbase-init: WARNING: Failed to seed dynamic security config from %s: %s\n", seed, strerror(errno));
+    }
+}
+
 /* Fork and exec a process */
 pid_t start_process(const char *path, char *const argv[]) {
     pid_t pid = fork();
@@ -314,6 +343,8 @@ int main(int argc, char *argv[]) {
     chmod("/mosquitto/log/mosquitto.log", 0666);
     
     /* Make dynsec.json writable (it's read-only from COPY in Dockerfile) */
+    chmod("/mosquitto/config/dynsec.json", 0666);
+    seed_dynsec();
     chmod("/mosquitto/config/dynsec.json", 0666);
     
     /* Start nginx */

@@ -6,6 +6,11 @@
 # Credentials are provided via Docker Swarm secrets (most secure):
 #   - Create mqbase.secrets file with MQBASE_USER and MQBASE_MQTT_USER
 #   - Register as a Docker secret before deploying
+#
+# Optional:
+#   - MQBASE_NETWORK: name of the (existing or created) overlay network, default 'proxy'
+#   - dynsec.json secret: seeds the dynamic security config on every start (see README, "Dynamic Security Configuration")
+#   - nginx drop-in configs: mount *.conf files to /mosquitto/config/nginx/ (see README, "Custom Nginx Locations")
 
 services:
   mqbase:
@@ -36,11 +41,22 @@ services:
       - mqbase.properties
     secrets:
       - mqbase.secrets
+      # Seed the dynamic security config from a secret (docker secret create dynsec.json dynsec.json)
+      # - dynsec.json
+    # configs:
+    #   - source: mqbase-nginx-custom
+    #     target: /mosquitto/config/nginx/custom.conf
     restart: always
 
 secrets:
   mqbase.secrets:
     external: true
+  # dynsec.json:
+  #   external: true
+
+# configs:
+#   mqbase-nginx-custom:
+#     file: ./dev/nginx-custom.conf
 
 volumes:
   mqbase-data:
@@ -51,5 +67,5 @@ volumes:
 networks:
   proxy:
     driver: overlay
-    name: proxy
+    name: ${MQBASE_NETWORK:-proxy}
     attachable: true

@@ -9,7 +9,45 @@ set -e
 #   2. Environment variables (MQBASE_USER, MQBASE_MQTT_USER)
 #   3. Mounted config file (/mosquitto/config/secrets.conf)
 #   4. Auto-generate random credentials (with warning)
+#
+# Dynamic security configuration seeding:
+#   MQBASE_DYNSEC_SEED       file copied to /mosquitto/config/dynsec.json before Mosquitto starts
+#                            (default: /run/secrets/dynsec.json, only used if the file exists)
+#   MQBASE_DYNSEC_SEED_MODE  always (default) - the seed replaces dynsec.json on every start,
+#                                               i.e. the deployed secret is the source of truth
+#                            init             - the seed is only used when dynsec.json does not exist yet
 # =============================================================================
+
+DYNSEC_FILE="/mosquitto/config/dynsec.json"
+
+# Seed dynsec.json from a Docker secret or a mounted file. Secrets are mounted read-only, but the
+# dynamic security plugin needs to write its config file, hence the copy.
+seed_dynsec() {
+	local seed="${MQBASE_DYNSEC_SEED:-/run/secrets/dynsec.json}"
+	local mode="${MQBASE_DYNSEC_SEED_MODE:-always}"
+	[ -f "$seed" ] || return 0
+
+	case "$mode" in
+		always) ;;
+		init)
+			if [ -s "$DYNSEC_FILE" ]; then
+				echo "Dynamic security config exists, seed $seed not applied (MQBASE_DYNSEC_SEED_MODE=init)"
+				return 0
+			fi
+			;;
+		*)
+			echo "WARNING: Unknown MQBASE_DYNSEC_SEED_MODE '$mode', using 'always'"
+			;;
+	esac
+
+	if cp "$seed" "$DYNSEC_FILE"; then
+		chown admin:admin "$DYNSEC_FILE" 2>/dev/null || true
+		chmod 644 "$DYNSEC_FILE"
+		echo "Dynamic security config seeded from $seed"
+	else
+		echo "WARNING: Failed to seed dynamic security config from $seed"
+	fi
+}
 
 # Generate a random password (16 alphanumeric characters)
 generate_password() {
@@ -205,7 +243,8 @@ if [ "$user" = '0' ]; then
 	# Create credential files for nginx and web UI
 	setup_credential_files
 	
-	# Sync MQTT password into dynsec.json
+	# Seed dynsec.json from a Docker secret (if provided), then sync the MQTT password into it
+	seed_dynsec
 	sync_mqtt_password
 	
 	# Create app config JSON from environment variables

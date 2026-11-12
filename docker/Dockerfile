@@ -79,7 +79,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         /usr/share/locale/* \
     && groupadd --gid ${GID} admin \
     && useradd --gid ${GID} --uid ${UID} --no-create-home --shell /sbin/nologin admin \
-    && mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/admin \
+    && mkdir -p /mosquitto/config/nginx /mosquitto/data /mosquitto/log /mosquitto/admin \
     && mkdir -p /var/log/nginx /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi \
     && chown -R admin:admin /mosquitto /var/log/nginx /tmp/nginx_*
 

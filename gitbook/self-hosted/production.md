@@ -83,6 +83,32 @@ Deploy the stack:
 docker stack deploy -c compose.swarm.yml mqbase
 ```
 
+### 3. Versioned Configuration (optional)
+
+Keep `mosquitto.conf` and the ACL configuration under version control and deliver them with the stack instead of a bind-mounted config directory. Read-only files go in as Docker configs, `dynsec.json` as a secret (mqBase copies it to a writable location on start, see [Configuration](configuration.md#seeding-the-acl-configuration-from-a-secret)):
+
+```bash
+docker config create mqbase-mosquitto.conf mosquitto/config/mosquitto.conf
+docker secret create dynsec.json dynsec.json
+```
+
+```yaml
+services:
+  mqbase:
+    configs:
+      - source: mqbase-mosquitto.conf
+        target: /mosquitto/config/mosquitto.conf
+    secrets:
+      - mqbase.secrets
+      - dynsec.json
+
+configs:
+  mqbase-mosquitto.conf:
+    external: true
+```
+
+Docker configs and secrets are immutable: create a new one (e.g. with a version suffix) and update the service to roll out a change.
+
 ***
 
 ## Kubernetes Deployment

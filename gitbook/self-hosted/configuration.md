@@ -197,6 +197,54 @@ mqBase uses Mosquitto's Dynamic Security plugin for authentication and authoriza
 2. Navigate to the **ACL** tab
 3. Manage **Clients**, **Groups**, and **Roles**
 
+### Seeding the ACL Configuration from a Secret
+
+For versioned ACL configurations, provide `dynsec.json` as a Docker secret (or any read-only mounted file). mqBase copies it to `/mosquitto/config/dynsec.json` before Mosquitto starts, because the dynamic security plugin needs a writable file.
+
+```bash
+docker secret create dynsec.json dynsec.json
+```
+
+```yaml
+services:
+  mqbase:
+    secrets:
+      - mqbase.secrets
+      - dynsec.json
+secrets:
+  dynsec.json:
+    external: true
+```
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored if it does not exist |
+| `MQBASE_DYNSEC_SEED_MODE` | `always` | `always`: the seed replaces `dynsec.json` on every start, the deployed secret is the source of truth. `init`: the seed is only used when `dynsec.json` does not exist yet |
+
+{% hint style="warning" %}
+With `always`, changes made in the ACL editor are lost on the next container start. Update the secret instead.
+{% endhint %}
+
+***
+
+## Custom Nginx Locations
+
+The internal Nginx includes `/mosquitto/config/nginx/*.conf` inside its `server` block. Mount files there to add locations, e.g. an additional entry path for the admin UI when your reverse proxy forwards `/my-admin` instead of `/`:
+
+```nginx
+location = /my-admin {
+    try_files /admin/index.html =404;
+    add_header Cache-Control "no-cache, no-store, must-revalidate";
+}
+```
+
+```yaml
+volumes:
+  - ./my-admin.conf:/mosquitto/config/nginx/my-admin.conf:ro
+```
+
+The UI uses absolute paths (`/admin/`, `/db-admin/`, `/mqtt`, `/broker-config`, `/mqtt-credentials`, `/app-config`, `/nginx-status`); a reverse proxy must forward those too.
+
 ### ACL Concepts
 
 * **Clients** — Individual MQTT users with credentials

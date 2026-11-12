@@ -150,6 +150,39 @@ The `dynsec.json` file defines the Mosquitto dynamic security configuration with
 
 To enable TLS termination inside the Mosquitto broker, mount your TLS certificate and key to `/mosquitto/security/` (e.g., `server.crt` and `server.key`) and uncomment the `certfile`/`keyfile` lines in [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf). For mutual TLS (mTLS) with client certificates, also configure the `cafile` and `require_certificate` options.
 
+### Dynamic Security Configuration from a Secret
+
+In orchestrated deployments the ACL configuration is usually versioned outside the container. Provide it as a Docker secret (or any read-only mounted file) and mqBase copies it to `/mosquitto/config/dynsec.json` before Mosquitto starts - the dynamic security plugin needs a writable file, which a secret mount is not.
+
+```bash
+docker secret create dynsec.json dynsec.json
+# compose.swarm.yml: add `dynsec.json` to the service's secrets
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored if it does not exist |
+| `MQBASE_DYNSEC_SEED_MODE` | `always` | `always`: the seed replaces `dynsec.json` on every container start (the deployed secret is the source of truth, changes made via the ACL editor do not survive a restart). `init`: the seed is only used when `dynsec.json` does not exist yet |
+
+The `MQBASE_MQTT_USER` password is synced into the seeded file as usual.
+
+### Custom Nginx Locations
+
+The internal Nginx includes `/mosquitto/config/nginx/*.conf` inside its `server` block. Mount a file there to add locations, for example an additional entry path for the admin UI when a reverse proxy forwards `/my-admin` instead of `/`:
+
+```nginx
+location = /my-admin {
+    try_files /admin/index.html =404;
+    add_header Cache-Control "no-cache, no-store, must-revalidate";
+}
+```
+
+```bash
+docker run -v ./my-admin.conf:/mosquitto/config/nginx/my-admin.conf:ro ... mqbase:latest
+```
+
+The UI itself uses absolute paths (`/admin/`, `/db-admin/`, `/mqtt`, `/broker-config`, `/mqtt-credentials`, `/app-config`, `/nginx-status`), so a reverse proxy must forward those as well.
+
 ## SQL Plugin Configuration
 
 The SQL plugin persists MQTT messages to a libSQL database. It can be configured via `mosquitto.conf` with the following options:
