@@ -105,6 +105,12 @@ services:
 configs:
   mqbase-mosquitto.conf:
     external: true
+
+secrets:
+  mqbase.secrets:
+    external: true
+  dynsec.json:
+    external: true
 ```
 
 Docker configs and secrets are immutable: create a new one (e.g. with a version suffix) and update the service to roll out a change.

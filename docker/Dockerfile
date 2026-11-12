@@ -54,7 +54,7 @@ LABEL maintainer="dotStar Technologies" \
 ARG UID=1883
 ARG GID=1883
 
-# Install only runtime dependencies
+# Install only runtime dependencies (jq: JSON-aware dynsec.json updates in the entrypoint)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libssl3t64 \
@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx-light \
         curl \
         xxd \
+        jq \
     && rm -rf /var/lib/apt/lists/* \
     # Remove package manager and unnecessary files to reduce image size
     && rm -rf \

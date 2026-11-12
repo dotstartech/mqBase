@@ -16,6 +16,7 @@ set -e
 #   MQBASE_DYNSEC_SEED_MODE  always (default) - the seed replaces dynsec.json on every start,
 #                                               i.e. the deployed secret is the source of truth
 #                            init             - the seed is only used when dynsec.json does not exist yet
+#   A seed that exists but cannot be applied (not a regular file, empty, copy failed) aborts the start.
 # =============================================================================
 
 DYNSEC_FILE="/mosquitto/config/dynsec.json"
@@ -25,7 +26,12 @@ DYNSEC_FILE="/mosquitto/config/dynsec.json"
 seed_dynsec() {
 	local seed="${MQBASE_DYNSEC_SEED:-/run/secrets/dynsec.json}"
 	local mode="${MQBASE_DYNSEC_SEED_MODE:-always}"
-	[ -f "$seed" ] || return 0
+	[ -e "$seed" ] || return 0
+
+	if [ ! -f "$seed" ] || [ ! -s "$seed" ]; then
+		echo "ERROR: Dynamic security seed $seed is not a regular, non-empty file"
+		exit 1
+	fi
 
 	case "$mode" in
 		always) ;;
@@ -40,12 +46,14 @@ seed_dynsec() {
 			;;
 	esac
 
-	if cp "$seed" "$DYNSEC_FILE"; then
+	# Copy to a temporary file first so that a failed copy cannot leave a truncated live config behind
+	if cp "$seed" "${DYNSEC_FILE}.tmp" && chmod 644 "${DYNSEC_FILE}.tmp" && mv "${DYNSEC_FILE}.tmp" "$DYNSEC_FILE"; then
 		chown admin:admin "$DYNSEC_FILE" 2>/dev/null || true
-		chmod 644 "$DYNSEC_FILE"
 		echo "Dynamic security config seeded from $seed"
 	else
-		echo "WARNING: Failed to seed dynamic security config from $seed"
+		rm -f "${DYNSEC_FILE}.tmp"
+		echo "ERROR: Failed to seed dynamic security config from $seed"
+		exit 1
 	fi
 }
 
@@ -159,6 +167,22 @@ sync_mqtt_password() {
 	mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
 	mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
 	
+	# The client must exist in dynsec.json; its PBKDF2 iteration count is kept (the plugin verifies the
+	# stored hash with the stored count) and only falls back to 101 when the field is missing or invalid
+	local client_count iterations
+	if ! client_count=$(jq -r --arg user "$mqtt_username" '[.clients[]? | select(.username == $user)] | length' "$dynsec" 2>/dev/null); then
+		echo "WARNING: $dynsec is not valid JSON, MQTT password not synced"
+		return 0
+	fi
+	if [ "$client_count" = "0" ]; then
+		echo "WARNING: MQTT user '$mqtt_username' not found in $dynsec, password not synced (the admin UI cannot connect to the broker)"
+		return 0
+	fi
+	iterations=$(jq -r --arg user "$mqtt_username" '[.clients[]? | select(.username == $user)][0].iterations // 101' "$dynsec")
+	if ! [[ "$iterations" =~ ^[0-9]+$ ]] || [ "$iterations" -le 0 ]; then
+		iterations=101
+	fi
+	
 	# Generate random 12 bytes of salt as hex (24 hex chars)
 	# Using hex avoids null byte issues that break shell variables
 	local salt_hex salt_b64
@@ -167,46 +191,35 @@ sync_mqtt_password() {
 	# Convert hex salt to base64 for storage in dynsec.json
 	salt_b64=$(echo "$salt_hex" | xxd -r -p | base64 | tr -d '\n')
 	
-	# Compute PBKDF2-SHA512 hash matching Mosquitto dynsec format:
-	#   - 64-byte key, SHA-512, 101 iterations
+	# Compute PBKDF2-SHA512 hash matching Mosquitto dynsec format (64-byte key, SHA-512)
 	local hash_hex
 	hash_hex=$(openssl kdf -keylen 64 \
 		-kdfopt digest:SHA512 \
 		-kdfopt "pass:${mqtt_password}" \
 		-kdfopt "hexsalt:${salt_hex}" \
-		-kdfopt iter:101 \
+		-kdfopt "iter:${iterations}" \
 		PBKDF2 2>/dev/null | tr -d ' :\n')
 	
 	if [ -z "$hash_hex" ]; then
-		echo "WARNING: Failed to compute PBKDF2 hash, MQTT password not synced"
-		return 1
+		echo "ERROR: Failed to compute PBKDF2 hash, MQTT password not synced"
+		exit 1
 	fi
 	
 	# Convert hex hash to base64 (matching dynsec.json format)
 	local hash_b64
 	hash_b64=$(echo "$hash_hex" | xxd -r -p | base64 | tr -d '\n')
 	
-	# Patch the password and salt for the target user in dynsec.json
-	# Uses awk to find the matching username block and replace password + salt
-	awk -v user="$mqtt_username" -v newhash="$hash_b64" -v newsalt="$salt_b64" '
-	BEGIN { in_target = 0 }
-	/"username"/ {
-		# Check if this is the target user
-		if (index($0, "\"" user "\"") > 0) in_target = 1
-		else in_target = 0
-	}
-	in_target && /"password"/ {
-		sub(/:[ \t]*"[^"]*"/, ": \"" newhash "\"")
-	}
-	in_target && /"salt"/ {
-		sub(/:[ \t]*"[^"]*"/, ": \"" newsalt "\"")
-		in_target = 0
-	}
-	{ print }
-	' "$dynsec" > "${dynsec}.tmp" && mv "${dynsec}.tmp" "$dynsec"
-	
-	chown admin:admin "$dynsec"
-	echo "MQTT password synced to dynsec.json for user: $mqtt_username"
+	# Update password, salt and iteration count of the target client (JSON-aware, works for any formatting)
+	if jq --arg user "$mqtt_username" --arg pw "$hash_b64" --arg salt "$salt_b64" --argjson iter "$iterations" \
+		'(.clients[] | select(.username == $user)) |= (.password = $pw | .salt = $salt | .iterations = $iter)' \
+		"$dynsec" > "${dynsec}.tmp" && mv "${dynsec}.tmp" "$dynsec"; then
+		chown admin:admin "$dynsec" 2>/dev/null || true
+		echo "MQTT password synced to dynsec.json for user: $mqtt_username"
+	else
+		rm -f "${dynsec}.tmp"
+		echo "ERROR: Failed to update $dynsec, MQTT password not synced"
+		exit 1
+	fi
 }
 
 # =============================================================================

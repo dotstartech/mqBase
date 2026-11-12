@@ -161,10 +161,10 @@ docker secret create dynsec.json dynsec.json
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored if it does not exist |
+| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored if it does not exist. A seed that exists but cannot be applied (not a regular non-empty file, copy failed) stops the container start |
 | `MQBASE_DYNSEC_SEED_MODE` | `always` | `always`: the seed replaces `dynsec.json` on every container start (the deployed secret is the source of truth, changes made via the ACL editor do not survive a restart). `init`: the seed is only used when `dynsec.json` does not exist yet |
 
-The `MQBASE_MQTT_USER` password is synced into the seeded file as usual.
+In the standard image the `MQBASE_MQTT_USER` password is synced into the seeded file as usual (the client must exist in the seed; its PBKDF2 iteration count is kept). The distroless image does not sync MQTT passwords into `dynsec.json` at all, so its seed must already contain the matching password hash for the `MQBASE_MQTT_USER` client.
 
 ### Custom Nginx Locations
 
