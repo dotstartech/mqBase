@@ -123,6 +123,10 @@ docker logs mqbase
 # ==============================================
 ```
 
+### Running as a Non-Root User
+
+The standard image starts as root only to fix the ownership of `/mosquitto/data` and `/mosquitto/log`, then drops to the `admin` user (UID/GID from the build arguments, `1000` for the published images). It can also be started directly as that user (`docker run --user 1000:1000`, Kubernetes `runAsUser: 1000`): credentials, the ACL seed and the UI configuration are applied the same way, and a start with credentials or a seed that cannot be applied fails instead of running with the image defaults. Other UIDs additionally need write access to `/mosquitto/config`, `/mosquitto/data`, `/mosquitto/log` and `/var/log/nginx` (e.g. via mounted volumes).
+
 ## Application Configuration
 
 The `mqbase.properties` file contains application configuration:
@@ -137,8 +141,18 @@ favicon=admin/logo.png
 |----------|-------------|
 | `version` | Application version (used by build/deploy scripts) |
 | `title` | Title displayed in the web UI header (default: "mqBase Admin") |
-| `logo` | Path to logo image displayed in the header (optional, no logo if empty) |
-| `favicon` | Path to favicon displayed in the browser tab (optional, no icon if empty) |
+| `logo` | Logo image displayed in the header: a file name in `/mosquitto/admin/` or a path from the web root (default: `admin/logo.png`, no logo if empty) |
+| `favicon` | Favicon displayed in the browser tab, same notation as `logo` (default: `admin/logo.png`, no icon if empty) |
+
+The properties are passed to the container as environment variables (`env_file` in the compose files) and read at container start, so they can be set per deployment. To use your own images, mount them into `/mosquitto/admin/` and set their file names:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e title="My Broker" -e logo=my-logo.png -e favicon=my-icon.png \
+  -v "$PWD/my-logo.png:/mosquitto/admin/my-logo.png:ro" \
+  -v "$PWD/my-icon.png:/mosquitto/admin/my-icon.png:ro" \
+  dotstartech/mqbase
+```
 
 The `dynsec.json` file defines the Mosquitto dynamic security configuration with default users:
 
@@ -149,6 +163,39 @@ The `dynsec.json` file defines the Mosquitto dynamic security configuration with
 | `guest`  | `guest`  | Restricted to `guest/#` topics (for demos) |
 
 To enable TLS termination inside the Mosquitto broker, mount your TLS certificate and key to `/mosquitto/security/` (e.g., `server.crt` and `server.key`) and uncomment the `certfile`/`keyfile` lines in [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf). For mutual TLS (mTLS) with client certificates, also configure the `cafile` and `require_certificate` options.
+
+### Dynamic Security Configuration from a Secret
+
+In orchestrated deployments the ACL configuration is usually versioned outside the container. Provide it as a Docker secret (or any read-only mounted file) and mqBase copies it to `/mosquitto/config/dynsec.json` before Mosquitto starts - the dynamic security plugin needs a writable file, which a secret mount is not.
+
+```bash
+docker secret create dynsec.json dynsec.json
+# compose.swarm.yml: add `dynsec.json` to the service's secrets
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored only if it does not exist. A seed that cannot be accessed (e.g. its directory is not searchable for the container user) or cannot be applied (not a regular non-empty file, copy failed) stops the container start |
+| `MQBASE_DYNSEC_SEED_MODE` | `always` | `always`: the seed replaces `dynsec.json` on every container start (the deployed secret is the source of truth, changes made via the ACL editor do not survive a restart). `init`: the seed is only used when `dynsec.json` does not exist yet |
+
+In the standard image the `MQBASE_MQTT_USER` password is synced into the seeded file as usual (the client must exist in the seed; its PBKDF2 iteration count is kept). The distroless image does not sync MQTT passwords into `dynsec.json` at all, so its seed must already contain the matching password hash for the `MQBASE_MQTT_USER` client.
+
+### Custom Nginx Locations
+
+The internal Nginx includes `/mosquitto/config/nginx/*.conf` inside its `server` block. Mount a file there to add locations, for example an additional entry path for the admin UI when a reverse proxy forwards `/my-admin` instead of `/`:
+
+```nginx
+location = /my-admin {
+    try_files /admin/index.html =404;
+    add_header Cache-Control "no-cache, no-store, must-revalidate";
+}
+```
+
+```bash
+docker run -v ./my-admin.conf:/mosquitto/config/nginx/my-admin.conf:ro ... mqbase:latest
+```
+
+The UI itself uses absolute paths (`/admin/`, `/db-admin/`, `/mqtt`, `/broker-config`, `/mqtt-credentials`, `/app-config`, `/nginx-status`), so a reverse proxy must forward those as well.
 
 ## SQL Plugin Configuration
 

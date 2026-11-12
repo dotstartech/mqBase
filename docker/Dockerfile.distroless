@@ -192,6 +192,7 @@ COPY admin /mosquitto/admin
 # Copy empty directories to create required paths
 COPY --from=builder /build/empty /mosquitto/data
 COPY --from=builder /build/empty /mosquitto/log
+COPY --from=builder /build/empty /mosquitto/config/nginx
 COPY --from=builder /build/empty /var/log/nginx
 COPY --from=builder /build/empty /run
 COPY --from=builder /build/empty /tmp
@@ -214,5 +215,9 @@ EXPOSE 9001
 EXPOSE 8080
 # libSQL queries over HTTP
 EXPOSE 8000
+
+# Admin UI branding defaults, can be overridden at container start
+ENV logo=admin/logo.png \
+    favicon=admin/logo.png
 
 ENTRYPOINT ["/usr/local/bin/mqbase-init"]

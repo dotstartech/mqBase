@@ -54,7 +54,7 @@ LABEL maintainer="dotStar Technologies" \
 ARG UID=1883
 ARG GID=1883
 
-# Install only runtime dependencies
+# Install only runtime dependencies (jq: JSON-aware dynsec.json updates in the entrypoint)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libssl3t64 \
@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx-light \
         curl \
         xxd \
+        jq \
     && rm -rf /var/lib/apt/lists/* \
     # Remove package manager and unnecessary files to reduce image size
     && rm -rf \
@@ -79,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         /usr/share/locale/* \
     && groupadd --gid ${GID} admin \
     && useradd --gid ${GID} --uid ${UID} --no-create-home --shell /sbin/nologin admin \
-    && mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/admin \
+    && mkdir -p /mosquitto/config/nginx /mosquitto/data /mosquitto/log /mosquitto/admin \
     && mkdir -p /var/log/nginx /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi \
     && chown -R admin:admin /mosquitto /var/log/nginx /tmp/nginx_*
 
@@ -122,6 +123,10 @@ EXPOSE 8000
 # Health check - verify nginx is serving (uses /health endpoint which bypasses auth)
 HEALTHCHECK --interval=5s --timeout=3s --start-period=3s --retries=3 \
     CMD curl -sf http://localhost:8080/health || exit 1
+
+# Admin UI branding defaults, can be overridden at container start
+ENV logo=admin/logo.png \
+    favicon=admin/logo.png
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/mosquitto/run.sh"]

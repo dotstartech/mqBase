@@ -9,7 +9,63 @@ set -e
 #   2. Environment variables (MQBASE_USER, MQBASE_MQTT_USER)
 #   3. Mounted config file (/mosquitto/config/secrets.conf)
 #   4. Auto-generate random credentials (with warning)
+#
+# Dynamic security configuration seeding:
+#   MQBASE_DYNSEC_SEED       file copied to /mosquitto/config/dynsec.json before Mosquitto starts
+#                            (default: /run/secrets/dynsec.json, only used if the file exists)
+#   MQBASE_DYNSEC_SEED_MODE  always (default) - the seed replaces dynsec.json on every start,
+#                                               i.e. the deployed secret is the source of truth
+#                            init             - the seed is only used when dynsec.json does not exist yet
+#   A seed that cannot be accessed or exists but cannot be applied (not a regular file, empty, copy
+#   failed) aborts the start.
 # =============================================================================
+
+DYNSEC_FILE="/mosquitto/config/dynsec.json"
+
+# Seed dynsec.json from a Docker secret or a mounted file. Secrets are mounted read-only, but the
+# dynamic security plugin needs to write its config file, hence the copy.
+seed_dynsec() {
+	local seed="${MQBASE_DYNSEC_SEED:-/run/secrets/dynsec.json}"
+	local mode="${MQBASE_DYNSEC_SEED_MODE:-always}"
+	local err
+
+	# Only a missing seed is skipped; [ -e ] is also false when the seed cannot be accessed
+	if ! err=$(LC_ALL=C stat -- "$seed" 2>&1 >/dev/null); then
+		case "$err" in
+			*": No such file or directory") return 0 ;;
+		esac
+		echo "ERROR: Dynamic security seed $seed cannot be accessed (${err##*: })"
+		exit 1
+	fi
+
+	if [ ! -f "$seed" ] || [ ! -s "$seed" ]; then
+		echo "ERROR: Dynamic security seed $seed is not a regular, non-empty file"
+		exit 1
+	fi
+
+	case "$mode" in
+		always) ;;
+		init)
+			if [ -s "$DYNSEC_FILE" ]; then
+				echo "Dynamic security config exists, seed $seed not applied (MQBASE_DYNSEC_SEED_MODE=init)"
+				return 0
+			fi
+			;;
+		*)
+			echo "WARNING: Unknown MQBASE_DYNSEC_SEED_MODE '$mode', using 'always'"
+			;;
+	esac
+
+	# Copy to a temporary file first so that a failed copy cannot leave a truncated live config behind
+	if cp "$seed" "${DYNSEC_FILE}.tmp" && chmod 644 "${DYNSEC_FILE}.tmp" && mv "${DYNSEC_FILE}.tmp" "$DYNSEC_FILE"; then
+		chown admin:admin "$DYNSEC_FILE" 2>/dev/null || true
+		echo "Dynamic security config seeded from $seed"
+	else
+		rm -f "${DYNSEC_FILE}.tmp"
+		echo "ERROR: Failed to seed dynamic security config from $seed"
+		exit 1
+	fi
+}
 
 # Generate a random password (16 alphanumeric characters)
 generate_password() {
@@ -100,14 +156,14 @@ setup_credential_files() {
 	local mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
 	local mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
 	echo "{\"username\":\"$mqtt_username\",\"password\":\"$mqtt_password\"}" > /tmp/mqtt-credentials.json
-	chown admin:admin /tmp/mqtt-credentials.json
+	chown admin:admin /tmp/mqtt-credentials.json 2>/dev/null || true
 	chmod 644 /tmp/mqtt-credentials.json
 	
 	# Parse MQBASE_USER (format: username:password) for HTTP Basic Auth htpasswd
 	local db_username=$(echo "$MQBASE_USER" | cut -d':' -f1)
 	local db_password=$(echo "$MQBASE_USER" | cut -d':' -f2-)
 	echo "$db_username:$(echo -n "$db_password" | openssl passwd -apr1 -stdin)" > /tmp/htpasswd
-	chown admin:admin /tmp/htpasswd
+	chown admin:admin /tmp/htpasswd 2>/dev/null || true
 	chmod 644 /tmp/htpasswd
 }
 
@@ -121,6 +177,22 @@ sync_mqtt_password() {
 	mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
 	mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
 	
+	# The client must exist in dynsec.json; its PBKDF2 iteration count is kept (the plugin verifies the
+	# stored hash with the stored count) and only falls back to 101 when the field is missing or invalid
+	local client_count iterations
+	if ! client_count=$(jq -r --arg user "$mqtt_username" '[.clients[]? | select(.username == $user)] | length' "$dynsec" 2>/dev/null); then
+		echo "WARNING: $dynsec is not valid JSON, MQTT password not synced"
+		return 0
+	fi
+	if [ "$client_count" = "0" ]; then
+		echo "WARNING: MQTT user '$mqtt_username' not found in $dynsec, password not synced (the admin UI cannot connect to the broker)"
+		return 0
+	fi
+	iterations=$(jq -r --arg user "$mqtt_username" '[.clients[]? | select(.username == $user)][0].iterations // 101' "$dynsec")
+	if ! [[ "$iterations" =~ ^[0-9]+$ ]] || [ "$iterations" -le 0 ]; then
+		iterations=101
+	fi
+	
 	# Generate random 12 bytes of salt as hex (24 hex chars)
 	# Using hex avoids null byte issues that break shell variables
 	local salt_hex salt_b64
@@ -129,46 +201,51 @@ sync_mqtt_password() {
 	# Convert hex salt to base64 for storage in dynsec.json
 	salt_b64=$(echo "$salt_hex" | xxd -r -p | base64 | tr -d '\n')
 	
-	# Compute PBKDF2-SHA512 hash matching Mosquitto dynsec format:
-	#   - 64-byte key, SHA-512, 101 iterations
+	# Compute PBKDF2-SHA512 hash matching Mosquitto dynsec format (64-byte key, SHA-512)
 	local hash_hex
 	hash_hex=$(openssl kdf -keylen 64 \
 		-kdfopt digest:SHA512 \
 		-kdfopt "pass:${mqtt_password}" \
 		-kdfopt "hexsalt:${salt_hex}" \
-		-kdfopt iter:101 \
+		-kdfopt "iter:${iterations}" \
 		PBKDF2 2>/dev/null | tr -d ' :\n')
 	
 	if [ -z "$hash_hex" ]; then
-		echo "WARNING: Failed to compute PBKDF2 hash, MQTT password not synced"
-		return 1
+		echo "ERROR: Failed to compute PBKDF2 hash, MQTT password not synced"
+		exit 1
 	fi
 	
 	# Convert hex hash to base64 (matching dynsec.json format)
 	local hash_b64
 	hash_b64=$(echo "$hash_hex" | xxd -r -p | base64 | tr -d '\n')
 	
-	# Patch the password and salt for the target user in dynsec.json
-	# Uses awk to find the matching username block and replace password + salt
-	awk -v user="$mqtt_username" -v newhash="$hash_b64" -v newsalt="$salt_b64" '
-	BEGIN { in_target = 0 }
-	/"username"/ {
-		# Check if this is the target user
-		if (index($0, "\"" user "\"") > 0) in_target = 1
-		else in_target = 0
-	}
-	in_target && /"password"/ {
-		sub(/:[ \t]*"[^"]*"/, ": \"" newhash "\"")
-	}
-	in_target && /"salt"/ {
-		sub(/:[ \t]*"[^"]*"/, ": \"" newsalt "\"")
-		in_target = 0
-	}
-	{ print }
-	' "$dynsec" > "${dynsec}.tmp" && mv "${dynsec}.tmp" "$dynsec"
+	# Update password, salt and iteration count of the target client (JSON-aware, works for any formatting)
+	if jq --arg user "$mqtt_username" --arg pw "$hash_b64" --arg salt "$salt_b64" --argjson iter "$iterations" \
+		'(.clients[] | select(.username == $user)) |= (.password = $pw | .salt = $salt | .iterations = $iter)' \
+		"$dynsec" > "${dynsec}.tmp" && mv "${dynsec}.tmp" "$dynsec"; then
+		chown admin:admin "$dynsec" 2>/dev/null || true
+		echo "MQTT password synced to dynsec.json for user: $mqtt_username"
+	else
+		rm -f "${dynsec}.tmp"
+		echo "ERROR: Failed to update $dynsec, MQTT password not synced (is the config directory writable for UID $(id -u)?)"
+		exit 1
+	fi
+}
+
+# Create app config JSON for the web UI from environment variables
+# These come from the image defaults (logo, favicon) or e.g. mqbase.properties via env_file in compose.yml
+setup_app_config() {
+	local app_version="${version:-}"
+	local app_title="${title:-}"
+	local app_logo="${logo:-}"
+	local app_favicon="${favicon:-}"
 	
-	chown admin:admin "$dynsec"
-	echo "MQTT password synced to dynsec.json for user: $mqtt_username"
+	# Create JSON file with version, title, logo, and favicon (empty values if not set)
+	# Remove existing file first to handle container restart (file may be owned by different user)
+	rm -f /tmp/app-config.json 2>/dev/null || true
+	echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
+	chown admin:admin /tmp/app-config.json 2>/dev/null || true
+	chmod 644 /tmp/app-config.json
 }
 
 # =============================================================================
@@ -198,33 +275,20 @@ if [ "$user" = '0' ]; then
 	mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
 	chown -R admin:admin /tmp/nginx_* /var/log/nginx
 	chmod -R 755 /tmp/nginx_* /var/log/nginx
-	
-	# Load credentials from multiple sources with fallback
-	load_credentials
-	
-	# Create credential files for nginx and web UI
-	setup_credential_files
-	
-	# Sync MQTT password into dynsec.json
-	sync_mqtt_password
-	
-	# Create app config JSON from environment variables
-	# These come from mqbase.properties via env_file in compose.yml
-	app_version="${version:-}"
-	app_title="${title:-}"
-	app_logo="${logo:-}"
-	app_favicon="${favicon:-}"
-	
-	# Create JSON file with version, title, logo, and favicon (empty values if not set)
-	# Remove existing file first to handle container restart (file may be owned by different user)
-	rm -f /tmp/app-config.json 2>/dev/null || true
-	echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
-	chown admin:admin /tmp/app-config.json
-	chmod 644 /tmp/app-config.json
-	
+fi
+
+# Credentials, ACL seed and UI config are applied whatever user the container runs as: none of it
+# needs root, only a writable /tmp and config directory. Skipping it for non-root users would leave
+# the image default credentials active and the deployed seed unused.
+load_credentials
+setup_credential_files
+seed_dynsec
+sync_mqtt_password
+setup_app_config
+
+if [ "$user" = '0' ]; then
 	# Switch to admin user and execute the command
 	exec su-exec admin "$@"
 else
-	# If not running as root, just execute the command
 	exec "$@"
 fi
