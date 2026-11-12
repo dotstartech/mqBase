@@ -281,7 +281,7 @@ int copy_file(const char *src, const char *dst) {
 
 /* Seed dynsec.json from a Docker secret or mounted file (see MQBASE_DYNSEC_SEED / MQBASE_DYNSEC_SEED_MODE).
  * Secrets are mounted read-only, but the dynamic security plugin needs to write its config file.
- * Returns 0 if nothing was to be done or the seed was applied, -1 if a present seed could not be applied. */
+ * Returns 0 if there is no seed or the seed was applied, -1 if the seed could not be accessed or applied. */
 int seed_dynsec(void) {
     const char *seed = getenv("MQBASE_DYNSEC_SEED");
     const char *mode = getenv("MQBASE_DYNSEC_SEED_MODE");
@@ -289,7 +289,11 @@ int seed_dynsec(void) {
 
     if (!seed || !seed[0]) seed = "/run/secrets/dynsec.json";
     if (!mode || !mode[0]) mode = "always";
-    if (stat(seed, &st) != 0) return 0;
+    if (stat(seed, &st) != 0) {
+        if (errno == ENOENT) return 0;
+        fprintf(stderr, "mqbase-init: ERROR: Dynamic security seed %s cannot be accessed: %s\n", seed, strerror(errno));
+        return -1;
+    }
 
     /* A Kubernetes secret mounted as directory or an empty file must not replace the live config */
     if (!S_ISREG(st.st_mode) || st.st_size == 0) {

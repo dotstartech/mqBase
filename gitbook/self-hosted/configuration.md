@@ -218,7 +218,7 @@ secrets:
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored if it does not exist. A seed that exists but cannot be applied stops the container start |
+| `MQBASE_DYNSEC_SEED` | `/run/secrets/dynsec.json` | Seed file; ignored only if it does not exist. A seed that cannot be accessed (e.g. its directory is not searchable for the container user) or cannot be applied stops the container start |
 | `MQBASE_DYNSEC_SEED_MODE` | `always` | `always`: the seed replaces `dynsec.json` on every start, the deployed secret is the source of truth. `init`: the seed is only used when `dynsec.json` does not exist yet |
 
 In the standard image the `MQBASE_MQTT_USER` password is synced into the seeded file (the client must exist in the seed). The distroless image does not sync MQTT passwords into `dynsec.json`; its seed must already contain the matching hash for the `MQBASE_MQTT_USER` client.

@@ -337,6 +337,67 @@ test_special_characters() {
     echo ""
 }
 
+test_seed_access() {
+    local image="$1"
+    
+    echo -e "${CYAN}=== TEST 7: Dynamic security seed - absent vs. inaccessible ===${NC}"
+    
+    docker run -d --name mqbase-cred-test \
+        -p 11883:1883 -p 18080:8080 \
+        -e MQBASE_USER=seeduser:seedpass \
+        -e MQBASE_MQTT_USER=admin:admin \
+        -e MQBASE_DYNSEC_SEED=/nonexistent/dynsec.json \
+        "$image" >/dev/null 2>&1
+
+    if wait_for_container; then
+        if ! docker logs mqbase-cred-test 2>&1 | grep -q "Dynamic security seed"; then
+            pass "Absent seed is ignored"
+        else
+            fail "Absent seed should be ignored silently"
+        fi
+    else
+        fail "Container failed to start without a seed"
+    fi
+    cleanup
+    
+    if [ "$(id -u)" = "65534" ]; then
+        skip "Inaccessible seed (test user is UID 65534, the seed directory would be searchable)"
+        echo ""
+        return
+    fi
+    
+    # Seed in a directory that the container user cannot search
+    local seed_dir exit_code
+    seed_dir=$(mktemp -d)
+    chmod 700 "$seed_dir"
+    echo '{}' > "$seed_dir/dynsec.json"
+
+    docker run -d --name mqbase-cred-test \
+        --user 65534:65534 \
+        -e MQBASE_USER=seeduser:seedpass \
+        -e MQBASE_MQTT_USER=admin:admin \
+        -e MQBASE_DYNSEC_SEED=/seed/dynsec.json \
+        -v "$seed_dir:/seed:ro" \
+        "$image" >/dev/null 2>&1
+
+    exit_code=$(timeout 20 docker wait mqbase-cred-test 2>/dev/null)
+    if [ -n "$exit_code" ] && [ "$exit_code" != "0" ]; then
+        pass "Start with inaccessible seed aborted (exit code $exit_code)"
+    else
+        fail "Start with inaccessible seed should abort"
+    fi
+    
+    # The unfixed standard image also exits here (config directory not writable), so check the reason
+    if docker logs mqbase-cred-test 2>&1 | grep -q "Dynamic security seed /seed/dynsec.json cannot be accessed"; then
+        pass "Log shows the inaccessible seed as reason"
+    else
+        fail "Log doesn't show the inaccessible seed as reason"
+    fi
+    cleanup
+    rm -rf "$seed_dir"
+    echo ""
+}
+
 # =============================================================================
 # Run tests for a specific image
 # =============================================================================
@@ -360,6 +421,7 @@ run_tests_for_image() {
     test_priority_override "$image" "$is_distroless"
     test_partial_credentials "$image"
     test_special_characters "$image"
+    test_seed_access "$image"
 }
 
 # =============================================================================

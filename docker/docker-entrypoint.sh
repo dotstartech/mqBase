@@ -16,7 +16,8 @@ set -e
 #   MQBASE_DYNSEC_SEED_MODE  always (default) - the seed replaces dynsec.json on every start,
 #                                               i.e. the deployed secret is the source of truth
 #                            init             - the seed is only used when dynsec.json does not exist yet
-#   A seed that exists but cannot be applied (not a regular file, empty, copy failed) aborts the start.
+#   A seed that cannot be accessed or exists but cannot be applied (not a regular file, empty, copy
+#   failed) aborts the start.
 # =============================================================================
 
 DYNSEC_FILE="/mosquitto/config/dynsec.json"
@@ -26,7 +27,16 @@ DYNSEC_FILE="/mosquitto/config/dynsec.json"
 seed_dynsec() {
 	local seed="${MQBASE_DYNSEC_SEED:-/run/secrets/dynsec.json}"
 	local mode="${MQBASE_DYNSEC_SEED_MODE:-always}"
-	[ -e "$seed" ] || return 0
+	local err
+
+	# Only a missing seed is skipped; [ -e ] is also false when the seed cannot be accessed
+	if ! err=$(LC_ALL=C stat -- "$seed" 2>&1 >/dev/null); then
+		case "$err" in
+			*": No such file or directory") return 0 ;;
+		esac
+		echo "ERROR: Dynamic security seed $seed cannot be accessed (${err##*: })"
+		exit 1
+	fi
 
 	if [ ! -f "$seed" ] || [ ! -s "$seed" ]; then
 		echo "ERROR: Dynamic security seed $seed is not a regular, non-empty file"
