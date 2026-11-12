@@ -146,14 +146,14 @@ setup_credential_files() {
 	local mqtt_username=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f1)
 	local mqtt_password=$(echo "$MQBASE_MQTT_USER" | cut -d':' -f2-)
 	echo "{\"username\":\"$mqtt_username\",\"password\":\"$mqtt_password\"}" > /tmp/mqtt-credentials.json
-	chown admin:admin /tmp/mqtt-credentials.json
+	chown admin:admin /tmp/mqtt-credentials.json 2>/dev/null || true
 	chmod 644 /tmp/mqtt-credentials.json
 	
 	# Parse MQBASE_USER (format: username:password) for HTTP Basic Auth htpasswd
 	local db_username=$(echo "$MQBASE_USER" | cut -d':' -f1)
 	local db_password=$(echo "$MQBASE_USER" | cut -d':' -f2-)
 	echo "$db_username:$(echo -n "$db_password" | openssl passwd -apr1 -stdin)" > /tmp/htpasswd
-	chown admin:admin /tmp/htpasswd
+	chown admin:admin /tmp/htpasswd 2>/dev/null || true
 	chmod 644 /tmp/htpasswd
 }
 
@@ -217,9 +217,25 @@ sync_mqtt_password() {
 		echo "MQTT password synced to dynsec.json for user: $mqtt_username"
 	else
 		rm -f "${dynsec}.tmp"
-		echo "ERROR: Failed to update $dynsec, MQTT password not synced"
+		echo "ERROR: Failed to update $dynsec, MQTT password not synced (is the config directory writable for UID $(id -u)?)"
 		exit 1
 	fi
+}
+
+# Create app config JSON for the web UI from environment variables
+# These come from mqbase.properties via env_file in compose.yml
+setup_app_config() {
+	local app_version="${version:-}"
+	local app_title="${title:-}"
+	local app_logo="${logo:-}"
+	local app_favicon="${favicon:-}"
+	
+	# Create JSON file with version, title, logo, and favicon (empty values if not set)
+	# Remove existing file first to handle container restart (file may be owned by different user)
+	rm -f /tmp/app-config.json 2>/dev/null || true
+	echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
+	chown admin:admin /tmp/app-config.json 2>/dev/null || true
+	chmod 644 /tmp/app-config.json
 }
 
 # =============================================================================
@@ -249,34 +265,20 @@ if [ "$user" = '0' ]; then
 	mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
 	chown -R admin:admin /tmp/nginx_* /var/log/nginx
 	chmod -R 755 /tmp/nginx_* /var/log/nginx
-	
-	# Load credentials from multiple sources with fallback
-	load_credentials
-	
-	# Create credential files for nginx and web UI
-	setup_credential_files
-	
-	# Seed dynsec.json from a Docker secret (if provided), then sync the MQTT password into it
-	seed_dynsec
-	sync_mqtt_password
-	
-	# Create app config JSON from environment variables
-	# These come from mqbase.properties via env_file in compose.yml
-	app_version="${version:-}"
-	app_title="${title:-}"
-	app_logo="${logo:-}"
-	app_favicon="${favicon:-}"
-	
-	# Create JSON file with version, title, logo, and favicon (empty values if not set)
-	# Remove existing file first to handle container restart (file may be owned by different user)
-	rm -f /tmp/app-config.json 2>/dev/null || true
-	echo "{\"version\":\"${app_version}\",\"title\":\"${app_title}\",\"logo\":\"${app_logo}\",\"favicon\":\"${app_favicon}\"}" > /tmp/app-config.json
-	chown admin:admin /tmp/app-config.json
-	chmod 644 /tmp/app-config.json
-	
+fi
+
+# Credentials, ACL seed and UI config are applied whatever user the container runs as: none of it
+# needs root, only a writable /tmp and config directory. Skipping it for non-root users would leave
+# the image default credentials active and the deployed seed unused.
+load_credentials
+setup_credential_files
+seed_dynsec
+sync_mqtt_password
+setup_app_config
+
+if [ "$user" = '0' ]; then
 	# Switch to admin user and execute the command
 	exec su-exec admin "$@"
 else
-	# If not running as root, just execute the command
 	exec "$@"
 fi

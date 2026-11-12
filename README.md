@@ -123,6 +123,10 @@ docker logs mqbase
 # ==============================================
 ```
 
+### Running as a Non-Root User
+
+The standard image starts as root only to fix the ownership of `/mosquitto/data` and `/mosquitto/log`, then drops to the `admin` user (UID/GID from the build arguments, `1000` for the published images). It can also be started directly as that user (`docker run --user 1000:1000`, Kubernetes `runAsUser: 1000`): credentials, the ACL seed and the UI configuration are applied the same way, and a start with credentials or a seed that cannot be applied fails instead of running with the image defaults. Other UIDs additionally need write access to `/mosquitto/config`, `/mosquitto/data`, `/mosquitto/log` and `/var/log/nginx` (e.g. via mounted volumes).
+
 ## Application Configuration
 
 The `mqbase.properties` file contains application configuration:
