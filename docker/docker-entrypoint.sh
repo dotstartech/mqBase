@@ -233,7 +233,7 @@ sync_mqtt_password() {
 }
 
 # Create app config JSON for the web UI from environment variables
-# These come from mqbase.properties via env_file in compose.yml
+# These come from the image defaults (logo, favicon) or e.g. mqbase.properties via env_file in compose.yml
 setup_app_config() {
 	local app_version="${version:-}"
 	local app_title="${title:-}"

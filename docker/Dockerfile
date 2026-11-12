@@ -124,5 +124,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=3s --retries=3 \
     CMD curl -sf http://localhost:8080/health || exit 1
 
+# Admin UI branding defaults, can be overridden at container start
+ENV logo=admin/logo.png \
+    favicon=admin/logo.png
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/mosquitto/run.sh"]

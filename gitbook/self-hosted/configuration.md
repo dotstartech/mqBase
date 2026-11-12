@@ -82,8 +82,18 @@ favicon=admin/logo.png
 | --------- | ----------- |
 | `version` | Application version |
 | `title`   | Browser tab and header title |
-| `logo`    | Header logo image path |
-| `favicon` | Browser favicon path |
+| `logo`    | Header logo image: a file name in `/mosquitto/admin/` or a path from the web root (default: `admin/logo.png`, no logo if empty) |
+| `favicon` | Browser favicon, same notation as `logo` (default: `admin/logo.png`, no icon if empty) |
+
+The properties are passed to the container as environment variables and read at container start. To use your own images, mount them into `/mosquitto/admin/` and set their file names:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e logo=my-logo.png -e favicon=my-icon.png \
+  -v "$PWD/my-logo.png:/mosquitto/admin/my-logo.png:ro" \
+  -v "$PWD/my-icon.png:/mosquitto/admin/my-icon.png:ro" \
+  dotstartech/mqbase
+```
 
 ***
 

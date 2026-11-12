@@ -141,8 +141,18 @@ favicon=admin/logo.png
 |----------|-------------|
 | `version` | Application version (used by build/deploy scripts) |
 | `title` | Title displayed in the web UI header (default: "mqBase Admin") |
-| `logo` | Path to logo image displayed in the header (optional, no logo if empty) |
-| `favicon` | Path to favicon displayed in the browser tab (optional, no icon if empty) |
+| `logo` | Logo image displayed in the header: a file name in `/mosquitto/admin/` or a path from the web root (default: `admin/logo.png`, no logo if empty) |
+| `favicon` | Favicon displayed in the browser tab, same notation as `logo` (default: `admin/logo.png`, no icon if empty) |
+
+The properties are passed to the container as environment variables (`env_file` in the compose files) and read at container start, so they can be set per deployment. To use your own images, mount them into `/mosquitto/admin/` and set their file names:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e title="My Broker" -e logo=my-logo.png -e favicon=my-icon.png \
+  -v "$PWD/my-logo.png:/mosquitto/admin/my-logo.png:ro" \
+  -v "$PWD/my-icon.png:/mosquitto/admin/my-icon.png:ro" \
+  dotstartech/mqbase
+```
 
 The `dynsec.json` file defines the Mosquitto dynamic security configuration with default users:
 

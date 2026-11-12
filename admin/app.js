@@ -3544,6 +3544,12 @@ function closeConfirmOnOverlay(event) {
 // Initialization
 // =============================================================================
 
+// A plain file name refers to a file in the admin directory (/mosquitto/admin/), anything else is a path from the web root
+function appImageUrl(path) {
+    path = path.trim();
+    return (path.includes('/') ? '/' : '/admin/') + path;
+}
+
 // Load app configuration (title, logo) from mqbase.properties
 async function loadAppConfig() {
     try {
@@ -3561,14 +3567,14 @@ async function loadAppConfig() {
             // Apply logo if configured
             const logoEl = document.getElementById('headerLogo');
             if (logoEl && config.logo && config.logo.trim() !== '') {
-                logoEl.src = '/' + config.logo;
+                logoEl.src = appImageUrl(config.logo);
                 logoEl.style.display = 'block';
             }
             
             // Apply favicon if configured
             const faviconEl = document.getElementById('favicon');
             if (faviconEl && config.favicon && config.favicon.trim() !== '') {
-                faviconEl.href = '/' + config.favicon;
+                faviconEl.href = appImageUrl(config.favicon);
             }
             
             // Apply version in About dialog

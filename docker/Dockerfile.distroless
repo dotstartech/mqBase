@@ -216,4 +216,8 @@ EXPOSE 8080
 # libSQL queries over HTTP
 EXPOSE 8000
 
+# Admin UI branding defaults, can be overridden at container start
+ENV logo=admin/logo.png \
+    favicon=admin/logo.png
+
 ENTRYPOINT ["/usr/local/bin/mqbase-init"]
